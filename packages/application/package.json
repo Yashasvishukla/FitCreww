@@ -1,0 +1,33 @@
+{
+  "name": "@fitcrew/application",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    "./identity-access": "./src/identity-access/index.ts",
+    "./network": "./src/network/index.ts",
+    "./client-lifecycle": "./src/client-lifecycle/index.ts",
+    "./money": "./src/money/index.ts",
+    "./media": "./src/media/index.ts",
+    "./platform": "./src/platform/index.ts",
+    "./notifications": "./src/notifications/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "lint": "eslint src",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@fitcrew/domain": "workspace:*"
+  },
+  "devDependencies": {
+    "@fitcrew/config": "workspace:*",
+    "eslint": "^9.13.0",
+    "typescript": "^5.6.3",
+    "typescript-eslint": "^8.11.0",
+    "vitest": "^2.1.3"
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "name": "@fitcrew/worker",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "lint": "eslint src",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@fitcrew/application": "workspace:*",
+    "@fitcrew/db": "workspace:*",
+    "@fitcrew/domain": "workspace:*",
+    "node-cron": "^3.0.3",
+    "pino": "^9.4.0"
+  },
+  "devDependencies": {
+    "@fitcrew/config": "workspace:*",
+    "@types/node": "^22.7.5",
+    "@types/node-cron": "^3.0.11",
+    "eslint": "^9.13.0",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.3",
+    "typescript-eslint": "^8.11.0",
+    "vitest": "^2.1.3"
+  }
+}

@@ -1,0 +1,23 @@
+// FitCrew Prisma schema.
+//
+// Chunk 1.1 (skeleton) intentionally ships only a placeholder model so the
+// migration toolchain (prisma validate / migrate dev) is wired into CI from
+// day one. The real data model — every entity in FitCrew_DataModel.md, the
+// tenant-scoping Client Extension, and the RLS policies — lands in Chunk 1.2
+// ("Tenancy core"), written from that document, not from memory.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Placeholder model proving the schema → migration → client pipeline works
+/// end-to-end. Removed in Chunk 1.2 once Tenant/TenantConfig land for real.
+model SkeletonCheck {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+}

@@ -1,0 +1,32 @@
+{
+  "name": "@fitcrew/db",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "lint": "eslint src",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "migrate:check": "prisma validate --schema prisma/schema.prisma",
+    "migrate:dev": "prisma migrate dev --schema prisma/schema.prisma",
+    "generate": "prisma generate --schema prisma/schema.prisma"
+  },
+  "dependencies": {
+    "@fitcrew/domain": "workspace:*",
+    "@prisma/client": "^5.20.0"
+  },
+  "devDependencies": {
+    "@fitcrew/config": "workspace:*",
+    "eslint": "^9.13.0",
+    "prisma": "^5.20.0",
+    "typescript": "^5.6.3",
+    "typescript-eslint": "^8.11.0",
+    "vitest": "^2.1.3"
+  }
+}
