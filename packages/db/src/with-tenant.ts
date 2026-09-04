@@ -7,7 +7,7 @@ type TransactionOptions = {
   readonly isolationLevel?: unknown;
 };
 
-type TransactionClient = {
+export type TransactionClient = {
   readonly $executeRaw: (query: TemplateStringsArray, ...values: unknown[]) => unknown;
 };
 
