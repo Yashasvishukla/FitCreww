@@ -90,7 +90,7 @@ describe('AccessGate permission matrix', () => {
   });
 
   it('returns query predicates instead of an in-memory filter', () => {
-    expect(createAccessGate().scopeQuery(coach, 'Client')).toEqual({ tenantId, coachPartyId: coachId });
+    expect(createAccessGate().scopeQuery(coach, 'Client')).toEqual({ tenantId, currentCoachAssignment: { coachPartyId: coachId } });
     expect(createAccessGate().scopeQuery(owner, 'Client')).toEqual({ tenantId });
     expect(createAccessGate().scopeQuery(coach, 'Engagement')).toEqual({ id: { in: [] } });
   });

@@ -28,6 +28,18 @@ export type { CoachRosterEntry, CoachTermsInput, OrganizationInput } from './net
 export { cleanClientLifecycleError, enrollClientForUser, recordBaselineForUser, ClientLifecycleError } from './client-lifecycle.js';
 export type { BaselineInput, ClientListEntry, EnrollmentInput } from './client-lifecycle.js';
 export { listClientsForUser } from './client-lifecycle.js';
+export {
+  cleanTrainingOperationsError,
+  computeEvaluationDueEvents,
+  listTrainingDashboardForUser,
+  logTrainingSessionForUser,
+  markPendingEvaluationRemindersSent,
+  saveEvaluationScheduleForUser,
+  saveWorkoutPlanForUser,
+  TrainingOperationsError,
+  upsertExerciseForUser,
+} from './training-operations.js';
+export type { DueComputationResult, EvaluationScheduleInput, ExerciseCatalogEntry, PlanDayInput, ReminderResult, TrainingDashboard, TrainingSessionInput, WorkoutPlanInput } from './training-operations.js';
 export type { AuthenticatedUser } from './credentials.js';
 export { hashPassword, verifyPassword } from './password.js';
 export { prisma } from './prisma.js';

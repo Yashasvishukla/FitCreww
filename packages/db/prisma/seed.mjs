@@ -83,4 +83,24 @@ await prisma.party.updateMany({
   data: { userId: ownerUser.id },
 });
 
+const globalExercises = [
+  ['Squat', 'Legs'],
+  ['Push-up', 'Chest'],
+  ['Deadlift', 'Posterior chain'],
+  ['Plank', 'Core'],
+  ['Lat pulldown', 'Back'],
+  ['Dumbbell row', 'Back'],
+  ['Lunge', 'Legs'],
+  ['Shoulder press', 'Shoulders'],
+];
+
+for (const [name, muscleGroup] of globalExercises) {
+  const existing = await prisma.exerciseCatalog.findFirst({ where: { tenantId: null, name } });
+  if (existing) {
+    await prisma.exerciseCatalog.update({ where: { id: existing.id }, data: { muscleGroup } });
+  } else {
+    await prisma.exerciseCatalog.create({ data: { tenantId: null, name, muscleGroup, metadata: {} } });
+  }
+}
+
 await prisma.$disconnect();

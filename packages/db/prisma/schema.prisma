@@ -1,13 +1,4 @@
 // FitCrew Prisma schema.
-//
-// Chunk 1.2 ("Tenancy core"): the real Tenant/TenantConfig models, written
-// from FitCrew_DataModel.md §2.1, not from memory. `platform` schema holds
-// tenant-independent platform tables (RLS does not apply); `public` schema
-// holds tenant-scoped tables (every model there gets an RLS policy in the
-// migration SQL — see prisma/migrations/*/migration.sql).
-//
-// Tenant.plan_id / PlatformPlan are deliberately NOT modeled yet — that FK
-// target doesn't exist until Level 5.4 (platform layer / tenant billing).
 
 generator client {
   provider        = "prisma-client-js"
@@ -20,37 +11,39 @@ datasource db {
   schemas  = ["public", "platform"]
 }
 
-/// A subscribing coaching business; the isolation boundary for all
-/// tenant-scoped data (Architecture §5, ADR-2). Lives outside tenant RLS —
-/// it IS the tenant, so "tenant_id = self" isolation doesn't apply.
 model Tenant {
   id        String       @id @default(uuid()) @db.Uuid
   name      String
   status    TenantStatus @default(trial)
   createdAt DateTime     @default(now()) @map("created_at")
 
-  config          TenantConfig?
-  parties         Party[]
-  roleAssignments RoleAssignment[]
-  engagements     Engagement[]
-  organizations   Organization[]
-  clients         Client[]
+  config              TenantConfig?
+  parties             Party[]
+  roleAssignments     RoleAssignment[]
+  engagements         Engagement[]
+  organizations       Organization[]
+  clients             Client[]
+  clientAssignments   ClientCoachAssignment[]
+  consentRecords      ConsentRecord[]
+  mediaAssets         MediaAsset[]
   workflowDefinitions WorkflowDefinition[]
-  consentRecords   ConsentRecord[]
-  mediaAssets     MediaAsset[]
-  evaluations     Evaluation[]
-  workflowStages  WorkflowStage[]
-  subscriptions   Subscription[]
-  auditLogs       AuditLog[]
-  invites         Invite[]
+  workflowStages      WorkflowStage[]
+  evaluations         Evaluation[]
+  evaluationPhotos    EvaluationPhoto[]
+  subscriptions       Subscription[]
+  exerciseCatalog     ExerciseCatalog[]
+  workoutPlans        WorkoutPlan[]
+  planDays            PlanDay[]
+  trainingSessions    TrainingSession[]
+  evaluationSchedules EvaluationSchedule[]
+  evaluationDueEvents EvaluationDueEvent[]
+  auditLogs           AuditLog[]
+  invites             Invite[]
 
   @@map("tenant")
   @@schema("platform")
 }
 
-/// Authentication identity. This is platform-wide rather than tenant-scoped:
-/// one person may receive roles in multiple tenants. Tenant membership starts
-/// with RoleAssignment in Level 1.4.
 model User {
   id                   String    @id @default(uuid()) @db.Uuid
   name                 String?
@@ -71,8 +64,6 @@ model User {
   @@schema("platform")
 }
 
-/// Auth.js adapter model. OAuth is not enabled in Level 1.3, but this model
-/// keeps the database-session adapter complete for future providers.
 model Account {
   id                String  @id @default(uuid()) @db.Uuid
   userId            String  @map("user_id") @db.Uuid
@@ -94,8 +85,6 @@ model Account {
   @@schema("platform")
 }
 
-/// Auth.js adapter session table retained for provider compatibility. The
-/// Credentials provider uses JWT sessions in the web app.
 model Session {
   id           String   @id @default(uuid()) @db.Uuid
   sessionToken String   @unique @map("session_token")
@@ -119,16 +108,6 @@ model VerificationToken {
   @@schema("platform")
 }
 
-enum TenantStatus {
-  active
-  suspended
-  trial
-
-  @@schema("platform")
-}
-
-/// Per-tenant configurable business rules (P4: everything that varies is
-/// data). Tenant-scoped: RLS-protected, one row per tenant.
 model TenantConfig {
   tenantId                        String            @id @map("tenant_id") @db.Uuid
   defaultCommissionRate           Decimal           @map("default_commission_rate") @db.Decimal(5, 2)
@@ -155,20 +134,22 @@ model Party {
   createdAt   DateTime    @default(now()) @map("created_at")
   updatedAt   DateTime    @updatedAt @map("updated_at")
 
-  tenant                Tenant           @relation(fields: [tenantId], references: [id])
-  user                  User?            @relation(fields: [userId], references: [id])
+  tenant                Tenant                  @relation(fields: [tenantId], references: [id])
+  user                  User?                   @relation(fields: [userId], references: [id])
   roleAssignments       RoleAssignment[]
-  upstreamEngagements   Engagement[]     @relation("EngagementUpstream")
-  downstreamEngagements Engagement[]     @relation("EngagementDownstream")
+  upstreamEngagements   Engagement[]            @relation("EngagementUpstream")
+  downstreamEngagements Engagement[]            @relation("EngagementDownstream")
   auditLogs             AuditLog[]
   createdInvites        Invite[]
   organization          Organization?
-  enrolledClients       Client[]             @relation("ClientParty")
+  enrolledClients       Client[]                @relation("ClientParty")
   assignedCoachClients  ClientCoachAssignment[] @relation("CoachAssignments")
-  enrolledByClients     Client[]             @relation("ClientEnrolledBy")
+  enrolledByClients     Client[]                @relation("ClientEnrolledBy")
   assignedByAssignments ClientCoachAssignment[] @relation("AssignedBy")
-  consentRecords        ConsentRecord[]      @relation("ConsentCapturedBy")
-  evaluations           Evaluation[]         @relation("EvaluationBy")
+  consentRecords        ConsentRecord[]         @relation("ConsentCapturedBy")
+  evaluations           Evaluation[]            @relation("EvaluationBy")
+  createdWorkoutPlans   WorkoutPlan[]           @relation("WorkoutPlanCreatedBy")
+  trainingSessions      TrainingSession[]       @relation("TrainingSessionCoach")
 
   @@unique([tenantId, userId])
   @@index([tenantId, kind, status])
@@ -221,16 +202,16 @@ model Engagement {
 }
 
 model Organization {
-  id             String   @id @default(uuid()) @db.Uuid
-  tenantId       String   @map("tenant_id") @db.Uuid
-  partyId        String   @unique @map("party_id") @db.Uuid
-  agreementTerms Json     @map("agreement_terms")
+  id             String             @id @default(uuid()) @db.Uuid
+  tenantId       String             @map("tenant_id") @db.Uuid
+  partyId        String             @unique @map("party_id") @db.Uuid
+  agreementTerms Json               @map("agreement_terms")
   status         OrganizationStatus @default(active)
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
+  createdAt      DateTime           @default(now()) @map("created_at")
+  updatedAt      DateTime           @updatedAt @map("updated_at")
 
-  tenant Tenant @relation(fields: [tenantId], references: [id])
-  party  Party  @relation(fields: [partyId], references: [id])
+  tenant  Tenant   @relation(fields: [tenantId], references: [id])
+  party   Party    @relation(fields: [partyId], references: [id])
   clients Client[]
 
   @@index([tenantId, status])
@@ -239,31 +220,35 @@ model Organization {
 }
 
 model Client {
-  id                       String   @id @default(uuid()) @db.Uuid
-  tenantId                 String   @map("tenant_id") @db.Uuid
-  partyId                  String   @map("party_id") @db.Uuid
-  currentCoachAssignmentId String?  @unique @map("current_coach_assignment_id") @db.Uuid
-  organizationId           String?  @map("organization_id") @db.Uuid
-  enrolledByPartyId        String   @map("enrolled_by_party_id") @db.Uuid
-  customPrice              Decimal  @map("custom_price") @db.Decimal(12, 2)
-  schedule                 Json     @default("{}")
-  photoConsent             Boolean  @default(false) @map("photo_consent")
-  photoConsentAt           DateTime? @map("photo_consent_at")
+  id                       String       @id @default(uuid()) @db.Uuid
+  tenantId                 String       @map("tenant_id") @db.Uuid
+  partyId                  String       @map("party_id") @db.Uuid
+  currentCoachAssignmentId String?      @unique @map("current_coach_assignment_id") @db.Uuid
+  organizationId           String?      @map("organization_id") @db.Uuid
+  enrolledByPartyId        String       @map("enrolled_by_party_id") @db.Uuid
+  customPrice              Decimal      @map("custom_price") @db.Decimal(12, 2)
+  schedule                 Json         @default("{}")
+  photoConsent             Boolean      @default(false) @map("photo_consent")
+  photoConsentAt           DateTime?    @map("photo_consent_at")
   status                   ClientStatus @default(active)
-  workflowState            String?  @map("workflow_state")
-  createdAt                DateTime @default(now()) @map("created_at")
-  updatedAt                DateTime @updatedAt @map("updated_at")
+  workflowState            String?      @map("workflow_state")
+  createdAt                DateTime     @default(now()) @map("created_at")
+  updatedAt                DateTime     @updatedAt @map("updated_at")
 
-  tenant Tenant @relation(fields: [tenantId], references: [id])
-  party Party @relation("ClientParty", fields: [partyId], references: [id])
-  organization Organization? @relation(fields: [organizationId], references: [id])
-  enrolledBy Party @relation("ClientEnrolledBy", fields: [enrolledByPartyId], references: [id])
+  tenant                 Tenant                 @relation(fields: [tenantId], references: [id])
+  party                  Party                  @relation("ClientParty", fields: [partyId], references: [id])
+  organization           Organization?          @relation(fields: [organizationId], references: [id])
+  enrolledBy             Party                  @relation("ClientEnrolledBy", fields: [enrolledByPartyId], references: [id])
   currentCoachAssignment ClientCoachAssignment? @relation("CurrentCoach", fields: [currentCoachAssignmentId], references: [id])
-  coachAssignments ClientCoachAssignment[]
-  consentRecords ConsentRecord[]
-  mediaAssets MediaAsset[]
-  evaluations Evaluation[]
-  subscriptions Subscription[]
+  coachAssignments       ClientCoachAssignment[]
+  consentRecords         ConsentRecord[]
+  mediaAssets            MediaAsset[]
+  evaluations            Evaluation[]
+  subscriptions          Subscription[]
+  workoutPlans           WorkoutPlan[]
+  trainingSessions       TrainingSession[]
+  evaluationSchedule     EvaluationSchedule?
+  evaluationDueEvents    EvaluationDueEvent[]
 
   @@unique([tenantId, partyId])
   @@index([tenantId, organizationId, status])
@@ -272,108 +257,123 @@ model Client {
 }
 
 model ClientCoachAssignment {
-  id String @id @default(uuid()) @db.Uuid
-  tenantId String @map("tenant_id") @db.Uuid
-  clientId String @map("client_id") @db.Uuid
-  coachPartyId String @map("coach_party_id") @db.Uuid
-  assignedByPartyId String @map("assigned_by_party_id") @db.Uuid
-  validFrom DateTime @map("valid_from") @db.Date
-  validTo DateTime? @map("valid_to") @db.Date
-  reason String?
-  client Client @relation(fields: [clientId], references: [id])
-  coachParty Party @relation("CoachAssignments", fields: [coachPartyId], references: [id])
-  assignedBy Party @relation("AssignedBy", fields: [assignedByPartyId], references: [id])
-  currentForClient Client? @relation("CurrentCoach")
-  evaluations Evaluation[]
+  id                String    @id @default(uuid()) @db.Uuid
+  tenantId          String    @map("tenant_id") @db.Uuid
+  clientId          String    @map("client_id") @db.Uuid
+  coachPartyId      String    @map("coach_party_id") @db.Uuid
+  assignedByPartyId String    @map("assigned_by_party_id") @db.Uuid
+  validFrom         DateTime  @map("valid_from") @db.Date
+  validTo           DateTime? @map("valid_to") @db.Date
+  reason            String?
+
+  tenant           Tenant            @relation(fields: [tenantId], references: [id])
+  client           Client            @relation(fields: [clientId], references: [id])
+  coachParty       Party             @relation("CoachAssignments", fields: [coachPartyId], references: [id])
+  assignedBy       Party             @relation("AssignedBy", fields: [assignedByPartyId], references: [id])
+  currentForClient Client?           @relation("CurrentCoach")
+  evaluations      Evaluation[]
+  trainingSessions TrainingSession[]
+
   @@index([tenantId, coachPartyId, validTo])
   @@map("client_coach_assignment")
   @@schema("public")
 }
 
 model ConsentRecord {
-  id String @id @default(uuid()) @db.Uuid
-  tenantId String @map("tenant_id") @db.Uuid
-  clientId String @map("client_id") @db.Uuid
-  purpose String
-  policyVersion String @map("policy_version")
-  state ConsentState
-  capturedByPartyId String @map("captured_by_party_id") @db.Uuid
-  captureSource String @map("capture_source")
-  capturedAt DateTime @map("captured_at")
-  withdrawnAt DateTime? @map("withdrawn_at")
-  notes String?
-  tenant Tenant @relation(fields: [tenantId], references: [id])
-  client Client @relation(fields: [clientId], references: [id])
-  capturedBy Party @relation("ConsentCapturedBy", fields: [capturedByPartyId], references: [id])
+  id                String       @id @default(uuid()) @db.Uuid
+  tenantId          String       @map("tenant_id") @db.Uuid
+  clientId          String       @map("client_id") @db.Uuid
+  purpose           String
+  policyVersion     String       @map("policy_version")
+  state             ConsentState
+  capturedByPartyId String       @map("captured_by_party_id") @db.Uuid
+  captureSource     String       @map("capture_source")
+  capturedAt        DateTime     @map("captured_at")
+  withdrawnAt       DateTime?    @map("withdrawn_at")
+  notes             String?
+
+  tenant     Tenant @relation(fields: [tenantId], references: [id])
+  client     Client @relation(fields: [clientId], references: [id])
+  capturedBy Party  @relation("ConsentCapturedBy", fields: [capturedByPartyId], references: [id])
+
   @@index([tenantId, clientId, capturedAt])
   @@map("consent_record")
   @@schema("public")
 }
 
 model MediaAsset {
-  id String @id @default(uuid()) @db.Uuid
-  tenantId String @map("tenant_id") @db.Uuid
-  clientId String? @map("client_id") @db.Uuid
-  blobKey String @unique @map("blob_key")
-  contentType String @map("content_type")
-  byteSize Int @map("byte_size")
-  sha256 String
-  status MediaStatus @default(active)
-  createdAt DateTime @default(now()) @map("created_at")
-  removedAt DateTime? @map("removed_at")
-  tenant Tenant @relation(fields: [tenantId], references: [id])
-  client Client? @relation(fields: [clientId], references: [id])
+  id          String      @id @default(uuid()) @db.Uuid
+  tenantId    String      @map("tenant_id") @db.Uuid
+  clientId    String?     @map("client_id") @db.Uuid
+  blobKey     String      @unique @map("blob_key")
+  contentType String      @map("content_type")
+  byteSize    Int         @map("byte_size")
+  sha256      String
+  status      MediaStatus @default(active)
+  createdAt   DateTime    @default(now()) @map("created_at")
+  removedAt   DateTime?   @map("removed_at")
+
+  tenant           Tenant            @relation(fields: [tenantId], references: [id])
+  client           Client?           @relation(fields: [clientId], references: [id])
   evaluationPhotos EvaluationPhoto[]
+
   @@index([tenantId, clientId, status])
   @@map("media_asset")
   @@schema("public")
 }
 
 model Evaluation {
-  id String @id @default(uuid()) @db.Uuid
-  tenantId String @map("tenant_id") @db.Uuid
-  clientId String @map("client_id") @db.Uuid
-  coachAssignmentId String? @map("coach_assignment_id") @db.Uuid
-  evaluatedByPartyId String @map("evaluated_by_party_id") @db.Uuid
-  evaluatedAt DateTime @map("evaluated_at")
-  type EvaluationType
-  measurements Json
-  postureNotes String? @map("posture_notes")
-  deltas Json @default("{}")
-  cadenceContext Json @default("{}") @map("cadence_context")
-  tenant Tenant @relation(fields: [tenantId], references: [id])
-  client Client @relation(fields: [clientId], references: [id])
-  evaluatedBy Party @relation("EvaluationBy", fields: [evaluatedByPartyId], references: [id])
+  id                 String         @id @default(uuid()) @db.Uuid
+  tenantId           String         @map("tenant_id") @db.Uuid
+  clientId           String         @map("client_id") @db.Uuid
+  coachAssignmentId  String?        @map("coach_assignment_id") @db.Uuid
+  evaluatedByPartyId String         @map("evaluated_by_party_id") @db.Uuid
+  evaluatedAt        DateTime       @map("evaluated_at")
+  type               EvaluationType
+  measurements       Json
+  postureNotes       String?        @map("posture_notes")
+  deltas             Json           @default("{}")
+  cadenceContext     Json           @default("{}") @map("cadence_context")
+
+  tenant          Tenant                 @relation(fields: [tenantId], references: [id])
+  client          Client                 @relation(fields: [clientId], references: [id])
+  evaluatedBy     Party                  @relation("EvaluationBy", fields: [evaluatedByPartyId], references: [id])
   coachAssignment ClientCoachAssignment? @relation(fields: [coachAssignmentId], references: [id])
-  photos EvaluationPhoto[]
+  photos          EvaluationPhoto[]
+
   @@index([tenantId, clientId, evaluatedAt])
   @@map("evaluation")
   @@schema("public")
 }
 
 model EvaluationPhoto {
-  id String @id @default(uuid()) @db.Uuid
-  tenantId String @map("tenant_id") @db.Uuid
+  id           String @id @default(uuid()) @db.Uuid
+  tenantId     String @map("tenant_id") @db.Uuid
   evaluationId String @map("evaluation_id") @db.Uuid
   mediaAssetId String @map("media_asset_id") @db.Uuid
-  viewType String @map("view_type")
+  viewType     String @map("view_type")
+
+  tenant     Tenant     @relation(fields: [tenantId], references: [id])
   evaluation Evaluation @relation(fields: [evaluationId], references: [id])
   mediaAsset MediaAsset @relation(fields: [mediaAssetId], references: [id])
+
   @@unique([evaluationId, mediaAssetId])
   @@map("evaluation_photo")
   @@schema("public")
 }
 
 model WorkflowDefinition {
-  id String @id @default(uuid()) @db.Uuid
-  tenantId String @map("tenant_id") @db.Uuid
-  name String
-  version Int
-  status WorkflowStatus
-  createdAt DateTime @default(now()) @map("created_at")
-  activatedAt DateTime? @map("activated_at")
-  tenant Tenant @relation(fields: [tenantId], references: [id])
+  id          String         @id @default(uuid()) @db.Uuid
+  tenantId    String         @map("tenant_id") @db.Uuid
+  name        String
+  version     Int
+  status      WorkflowStatus
+  createdAt   DateTime       @default(now()) @map("created_at")
+  activatedAt DateTime?      @map("activated_at")
+
+  tenant Tenant          @relation(fields: [tenantId], references: [id])
   stages WorkflowStage[]
+
   @@unique([tenantId, version])
   @@index([tenantId, status])
   @@map("workflow_definition")
@@ -381,36 +381,157 @@ model WorkflowDefinition {
 }
 
 model WorkflowStage {
-  id String @id @default(uuid()) @db.Uuid
-  tenantId String @map("tenant_id") @db.Uuid
-  workflowDefinitionId String @map("workflow_definition_id") @db.Uuid
-  sequence Int
-  stepType String @map("step_type")
-  config Json @default("{}")
-  isRequired Boolean @default(true) @map("is_required")
-  tenant Tenant @relation(fields: [tenantId], references: [id])
+  id                   String  @id @default(uuid()) @db.Uuid
+  tenantId             String  @map("tenant_id") @db.Uuid
+  workflowDefinitionId String  @map("workflow_definition_id") @db.Uuid
+  sequence             Int
+  stepType             String  @map("step_type")
+  config               Json    @default("{}")
+  isRequired           Boolean @default(true) @map("is_required")
+
+  tenant             Tenant             @relation(fields: [tenantId], references: [id])
   workflowDefinition WorkflowDefinition @relation(fields: [workflowDefinitionId], references: [id])
+
   @@unique([tenantId, workflowDefinitionId, sequence])
   @@map("workflow_stage")
   @@schema("public")
 }
 
 model Subscription {
-  id String @id @default(uuid()) @db.Uuid
-  tenantId String @map("tenant_id") @db.Uuid
-  clientId String @map("client_id") @db.Uuid
-  price Decimal @db.Decimal(12, 2)
-  startDate DateTime @map("start_date") @db.Date
-  durationMonths Int @map("duration_months")
-  endDate DateTime @map("end_date") @db.Date
-  status SubscriptionStatus @default(active)
-  previousSubscriptionId String? @map("previous_subscription_id") @db.Uuid
-  tenant Tenant @relation(fields: [tenantId], references: [id])
-  client Client @relation(fields: [clientId], references: [id])
-  previousSubscription Subscription? @relation("Renewals", fields: [previousSubscriptionId], references: [id])
-  renewals Subscription[] @relation("Renewals")
+  id                     String             @id @default(uuid()) @db.Uuid
+  tenantId               String             @map("tenant_id") @db.Uuid
+  clientId               String             @map("client_id") @db.Uuid
+  price                  Decimal            @db.Decimal(12, 2)
+  startDate              DateTime           @map("start_date") @db.Date
+  durationMonths         Int                @map("duration_months")
+  endDate                DateTime           @map("end_date") @db.Date
+  status                 SubscriptionStatus @default(active)
+  previousSubscriptionId String?            @map("previous_subscription_id") @db.Uuid
+
+  tenant               Tenant         @relation(fields: [tenantId], references: [id])
+  client               Client         @relation(fields: [clientId], references: [id])
+  previousSubscription Subscription?   @relation("Renewals", fields: [previousSubscriptionId], references: [id])
+  renewals             Subscription[]  @relation("Renewals")
+
   @@index([tenantId, clientId, status])
   @@map("subscription")
+  @@schema("public")
+}
+
+model ExerciseCatalog {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String?  @map("tenant_id") @db.Uuid
+  name        String
+  muscleGroup String?  @map("muscle_group")
+  metadata    Json     @default("{}")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant? @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, name])
+  @@index([tenantId, muscleGroup])
+  @@map("exercise_catalog")
+  @@schema("public")
+}
+
+model WorkoutPlan {
+  id               String   @id @default(uuid()) @db.Uuid
+  tenantId         String   @map("tenant_id") @db.Uuid
+  clientId         String   @map("client_id") @db.Uuid
+  version          Int
+  isCurrent        Boolean  @default(true) @map("is_current")
+  createdByPartyId String   @map("created_by_party_id") @db.Uuid
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  tenant    Tenant    @relation(fields: [tenantId], references: [id])
+  client    Client    @relation(fields: [clientId], references: [id])
+  createdBy Party     @relation("WorkoutPlanCreatedBy", fields: [createdByPartyId], references: [id])
+  days      PlanDay[]
+
+  @@unique([tenantId, clientId, version])
+  @@index([tenantId, clientId, isCurrent])
+  @@map("workout_plan")
+  @@schema("public")
+}
+
+model PlanDay {
+  id        String  @id @default(uuid()) @db.Uuid
+  tenantId  String  @map("tenant_id") @db.Uuid
+  planId    String  @map("plan_id") @db.Uuid
+  dayNumber Int     @map("day_number")
+  exercises Json
+  notes     String?
+
+  tenant Tenant      @relation(fields: [tenantId], references: [id])
+  plan   WorkoutPlan @relation(fields: [planId], references: [id])
+
+  @@unique([tenantId, planId, dayNumber])
+  @@index([tenantId, planId])
+  @@map("plan_day")
+  @@schema("public")
+}
+
+model TrainingSession {
+  id                 String   @id @default(uuid()) @db.Uuid
+  tenantId           String   @map("tenant_id") @db.Uuid
+  clientId           String   @map("client_id") @db.Uuid
+  coachAssignmentId  String   @map("coach_assignment_id") @db.Uuid
+  coachPartyId       String   @map("coach_party_id") @db.Uuid
+  sessionDate        DateTime @map("session_date") @db.Date
+  startTime          String   @map("start_time")
+  endTime            String?  @map("end_time")
+  exercisesPerformed Json     @map("exercises_performed")
+  notes              String?
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  tenant          Tenant                @relation(fields: [tenantId], references: [id])
+  client          Client                @relation(fields: [clientId], references: [id])
+  coachAssignment ClientCoachAssignment @relation(fields: [coachAssignmentId], references: [id])
+  coachParty      Party                 @relation("TrainingSessionCoach", fields: [coachPartyId], references: [id])
+
+  @@index([tenantId, coachPartyId, sessionDate])
+  @@index([tenantId, clientId, sessionDate])
+  @@map("training_session")
+  @@schema("public")
+}
+
+model EvaluationSchedule {
+  id          String            @id @default(uuid()) @db.Uuid
+  tenantId    String            @map("tenant_id") @db.Uuid
+  clientId    String            @unique @map("client_id") @db.Uuid
+  cadence     EvaluationCadence
+  nextDueDate DateTime          @map("next_due_date") @db.Date
+  isActive    Boolean           @default(true) @map("is_active")
+  createdAt   DateTime          @default(now()) @map("created_at")
+  updatedAt   DateTime          @updatedAt @map("updated_at")
+
+  tenant    Tenant               @relation(fields: [tenantId], references: [id])
+  client    Client               @relation(fields: [clientId], references: [id])
+  dueEvents EvaluationDueEvent[]
+
+  @@index([tenantId, isActive, nextDueDate])
+  @@map("evaluation_schedule")
+  @@schema("public")
+}
+
+model EvaluationDueEvent {
+  id                   String              @id @default(uuid()) @db.Uuid
+  tenantId             String              @map("tenant_id") @db.Uuid
+  evaluationScheduleId String              @map("evaluation_schedule_id") @db.Uuid
+  clientId             String              @map("client_id") @db.Uuid
+  nextDueDate          DateTime            @map("next_due_date") @db.Date
+  status               EvaluationDueStatus @default(pending)
+  reminderSentAt       DateTime?           @map("reminder_sent_at")
+  createdAt            DateTime            @default(now()) @map("created_at")
+
+  tenant   Tenant             @relation(fields: [tenantId], references: [id])
+  schedule EvaluationSchedule @relation(fields: [evaluationScheduleId], references: [id])
+  client   Client             @relation(fields: [clientId], references: [id])
+
+  @@unique([tenantId, evaluationScheduleId, nextDueDate])
+  @@index([tenantId, status, nextDueDate])
+  @@map("evaluation_due_event")
   @@schema("public")
 }
 
@@ -454,6 +575,14 @@ model Invite {
   @@index([tenantId, expiresAt])
   @@map("invite")
   @@schema("public")
+}
+
+enum TenantStatus {
+  active
+  suspended
+  trial
+
+  @@schema("platform")
 }
 
 enum EvaluationCadence {
@@ -519,33 +648,53 @@ enum ClientStatus {
   active
   paused
   left
+
   @@schema("public")
 }
+
 enum ConsentState {
   granted
   withdrawn
+
   @@schema("public")
 }
+
 enum MediaStatus {
   active
   removed
+
   @@schema("public")
 }
+
 enum EvaluationType {
   baseline
   periodic
+
   @@schema("public")
 }
+
 enum WorkflowStatus {
   draft
   active
   retired
+
   @@schema("public")
 }
+
 enum SubscriptionStatus {
   active
   lapsed
   renewed
   cancelled
+
+  @@schema("public")
+}
+
+enum EvaluationDueStatus {
+  pending
+  reminded
+  completed
+  dismissed
+
   @@schema("public")
 }
