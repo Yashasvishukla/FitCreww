@@ -60,7 +60,7 @@ const demoPasswordHash = await hash('FitCrew!Demo2026', {
   outputLen: 32,
 });
 
-await prisma.user.upsert({
+const ownerUser = await prisma.user.upsert({
   where: { email: 'owner@fitcrew.test' },
   update: {
     name: 'FitCrew Demo Owner',
@@ -73,6 +73,14 @@ await prisma.user.upsert({
     name: 'FitCrew Demo Owner',
     passwordHash: demoPasswordHash,
   },
+});
+
+await prisma.party.updateMany({
+  where: {
+    id: '11111111-1111-4111-8111-000000000001',
+    tenantId: '11111111-1111-4111-8111-111111111111',
+  },
+  data: { userId: ownerUser.id },
 });
 
 await prisma.$disconnect();

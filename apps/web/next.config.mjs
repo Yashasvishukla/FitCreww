@@ -3,7 +3,7 @@ const nextConfig = {
   reactStrictMode: true,
   transpilePackages: ['@fitcrew/ui', '@fitcrew/application', '@fitcrew/domain'],
   experimental: {
-    serverComponentsExternalPackages: ['@node-rs/argon2'],
+    serverComponentsExternalPackages: ['@node-rs/argon2', 'sharp', '@azure/storage-blob'],
   },
   webpack(config) {
     config.resolve.extensionAlias = {

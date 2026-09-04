@@ -3,6 +3,24 @@
 // module boundaries stay visible at the import site.
 
 export { IDENTITY_ACCESS_MODULE } from './identity-access/index.js';
+export {
+  canAccess,
+  createAccessGate,
+  effectiveAssignments,
+  scopeQuery,
+} from './identity-access/index.js';
+export { ConsoleEmailAdapter } from './notifications/index.js';
+export type { EmailAdapter, InviteEmail } from './notifications/index.js';
+export type {
+  AccessAction,
+  AccessAudit,
+  AccessAuditWriter,
+  AccessGate,
+  AccessResourceType,
+  Principal,
+  PrincipalAssignment,
+  ResourceRef,
+} from './identity-access/index.js';
 export { NETWORK_MODULE } from './network/index.js';
 export { CLIENT_LIFECYCLE_MODULE } from './client-lifecycle/index.js';
 export { MONEY_MODULE } from './money/index.js';

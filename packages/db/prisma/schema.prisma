@@ -29,7 +29,20 @@ model Tenant {
   status    TenantStatus @default(trial)
   createdAt DateTime     @default(now()) @map("created_at")
 
-  config TenantConfig?
+  config          TenantConfig?
+  parties         Party[]
+  roleAssignments RoleAssignment[]
+  engagements     Engagement[]
+  organizations   Organization[]
+  clients         Client[]
+  workflowDefinitions WorkflowDefinition[]
+  consentRecords   ConsentRecord[]
+  mediaAssets     MediaAsset[]
+  evaluations     Evaluation[]
+  workflowStages  WorkflowStage[]
+  subscriptions   Subscription[]
+  auditLogs       AuditLog[]
+  invites         Invite[]
 
   @@map("tenant")
   @@schema("platform")
@@ -52,6 +65,7 @@ model User {
 
   accounts Account[]
   sessions Session[]
+  parties  Party[]
 
   @@map("user_account")
   @@schema("platform")
@@ -130,6 +144,318 @@ model TenantConfig {
   @@schema("public")
 }
 
+model Party {
+  id          String      @id @default(uuid()) @db.Uuid
+  tenantId    String      @map("tenant_id") @db.Uuid
+  userId      String?     @map("user_id") @db.Uuid
+  kind        PartyKind
+  displayName String      @map("display_name")
+  contact     Json?
+  status      PartyStatus @default(active)
+  createdAt   DateTime    @default(now()) @map("created_at")
+  updatedAt   DateTime    @updatedAt @map("updated_at")
+
+  tenant                Tenant           @relation(fields: [tenantId], references: [id])
+  user                  User?            @relation(fields: [userId], references: [id])
+  roleAssignments       RoleAssignment[]
+  upstreamEngagements   Engagement[]     @relation("EngagementUpstream")
+  downstreamEngagements Engagement[]     @relation("EngagementDownstream")
+  auditLogs             AuditLog[]
+  createdInvites        Invite[]
+  organization          Organization?
+  enrolledClients       Client[]             @relation("ClientParty")
+  assignedCoachClients  ClientCoachAssignment[] @relation("CoachAssignments")
+  enrolledByClients     Client[]             @relation("ClientEnrolledBy")
+  assignedByAssignments ClientCoachAssignment[] @relation("AssignedBy")
+  consentRecords        ConsentRecord[]      @relation("ConsentCapturedBy")
+  evaluations           Evaluation[]         @relation("EvaluationBy")
+
+  @@unique([tenantId, userId])
+  @@index([tenantId, kind, status])
+  @@map("party")
+  @@schema("public")
+}
+
+model RoleAssignment {
+  id        String    @id @default(uuid()) @db.Uuid
+  tenantId  String    @map("tenant_id") @db.Uuid
+  partyId   String    @map("party_id") @db.Uuid
+  role      Role
+  scopeType ScopeType @map("scope_type")
+  scopeId   String?   @map("scope_id") @db.Uuid
+  validFrom DateTime  @map("valid_from") @db.Date
+  validTo   DateTime? @map("valid_to") @db.Date
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  party  Party  @relation(fields: [partyId], references: [id])
+
+  @@index([tenantId, partyId, role])
+  @@index([tenantId, scopeType, scopeId, role])
+  @@map("role_assignment")
+  @@schema("public")
+}
+
+model Engagement {
+  id                       String    @id @default(uuid()) @db.Uuid
+  tenantId                 String    @map("tenant_id") @db.Uuid
+  upstreamPartyId          String    @map("upstream_party_id") @db.Uuid
+  downstreamPartyId        String    @map("downstream_party_id") @db.Uuid
+  commissionRate           Decimal   @map("commission_rate") @db.Decimal(5, 2)
+  commissionLifespanMonths Int       @map("commission_lifespan_months")
+  validFrom                DateTime  @map("valid_from") @db.Date
+  validTo                  DateTime? @map("valid_to") @db.Date
+  terms                    Json      @default("{}")
+  createdAt                DateTime  @default(now()) @map("created_at")
+  updatedAt                DateTime  @updatedAt @map("updated_at")
+
+  tenant          Tenant @relation(fields: [tenantId], references: [id])
+  upstreamParty   Party  @relation("EngagementUpstream", fields: [upstreamPartyId], references: [id])
+  downstreamParty Party  @relation("EngagementDownstream", fields: [downstreamPartyId], references: [id])
+
+  @@index([tenantId, upstreamPartyId])
+  @@index([tenantId, downstreamPartyId])
+  @@map("engagement")
+  @@schema("public")
+}
+
+model Organization {
+  id             String   @id @default(uuid()) @db.Uuid
+  tenantId       String   @map("tenant_id") @db.Uuid
+  partyId        String   @unique @map("party_id") @db.Uuid
+  agreementTerms Json     @map("agreement_terms")
+  status         OrganizationStatus @default(active)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  party  Party  @relation(fields: [partyId], references: [id])
+  clients Client[]
+
+  @@index([tenantId, status])
+  @@map("organization")
+  @@schema("public")
+}
+
+model Client {
+  id                       String   @id @default(uuid()) @db.Uuid
+  tenantId                 String   @map("tenant_id") @db.Uuid
+  partyId                  String   @map("party_id") @db.Uuid
+  currentCoachAssignmentId String?  @unique @map("current_coach_assignment_id") @db.Uuid
+  organizationId           String?  @map("organization_id") @db.Uuid
+  enrolledByPartyId        String   @map("enrolled_by_party_id") @db.Uuid
+  customPrice              Decimal  @map("custom_price") @db.Decimal(12, 2)
+  schedule                 Json     @default("{}")
+  photoConsent             Boolean  @default(false) @map("photo_consent")
+  photoConsentAt           DateTime? @map("photo_consent_at")
+  status                   ClientStatus @default(active)
+  workflowState            String?  @map("workflow_state")
+  createdAt                DateTime @default(now()) @map("created_at")
+  updatedAt                DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  party Party @relation("ClientParty", fields: [partyId], references: [id])
+  organization Organization? @relation(fields: [organizationId], references: [id])
+  enrolledBy Party @relation("ClientEnrolledBy", fields: [enrolledByPartyId], references: [id])
+  currentCoachAssignment ClientCoachAssignment? @relation("CurrentCoach", fields: [currentCoachAssignmentId], references: [id])
+  coachAssignments ClientCoachAssignment[]
+  consentRecords ConsentRecord[]
+  mediaAssets MediaAsset[]
+  evaluations Evaluation[]
+  subscriptions Subscription[]
+
+  @@unique([tenantId, partyId])
+  @@index([tenantId, organizationId, status])
+  @@map("client")
+  @@schema("public")
+}
+
+model ClientCoachAssignment {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+  clientId String @map("client_id") @db.Uuid
+  coachPartyId String @map("coach_party_id") @db.Uuid
+  assignedByPartyId String @map("assigned_by_party_id") @db.Uuid
+  validFrom DateTime @map("valid_from") @db.Date
+  validTo DateTime? @map("valid_to") @db.Date
+  reason String?
+  client Client @relation(fields: [clientId], references: [id])
+  coachParty Party @relation("CoachAssignments", fields: [coachPartyId], references: [id])
+  assignedBy Party @relation("AssignedBy", fields: [assignedByPartyId], references: [id])
+  currentForClient Client? @relation("CurrentCoach")
+  evaluations Evaluation[]
+  @@index([tenantId, coachPartyId, validTo])
+  @@map("client_coach_assignment")
+  @@schema("public")
+}
+
+model ConsentRecord {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+  clientId String @map("client_id") @db.Uuid
+  purpose String
+  policyVersion String @map("policy_version")
+  state ConsentState
+  capturedByPartyId String @map("captured_by_party_id") @db.Uuid
+  captureSource String @map("capture_source")
+  capturedAt DateTime @map("captured_at")
+  withdrawnAt DateTime? @map("withdrawn_at")
+  notes String?
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  client Client @relation(fields: [clientId], references: [id])
+  capturedBy Party @relation("ConsentCapturedBy", fields: [capturedByPartyId], references: [id])
+  @@index([tenantId, clientId, capturedAt])
+  @@map("consent_record")
+  @@schema("public")
+}
+
+model MediaAsset {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+  clientId String? @map("client_id") @db.Uuid
+  blobKey String @unique @map("blob_key")
+  contentType String @map("content_type")
+  byteSize Int @map("byte_size")
+  sha256 String
+  status MediaStatus @default(active)
+  createdAt DateTime @default(now()) @map("created_at")
+  removedAt DateTime? @map("removed_at")
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  client Client? @relation(fields: [clientId], references: [id])
+  evaluationPhotos EvaluationPhoto[]
+  @@index([tenantId, clientId, status])
+  @@map("media_asset")
+  @@schema("public")
+}
+
+model Evaluation {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+  clientId String @map("client_id") @db.Uuid
+  coachAssignmentId String? @map("coach_assignment_id") @db.Uuid
+  evaluatedByPartyId String @map("evaluated_by_party_id") @db.Uuid
+  evaluatedAt DateTime @map("evaluated_at")
+  type EvaluationType
+  measurements Json
+  postureNotes String? @map("posture_notes")
+  deltas Json @default("{}")
+  cadenceContext Json @default("{}") @map("cadence_context")
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  client Client @relation(fields: [clientId], references: [id])
+  evaluatedBy Party @relation("EvaluationBy", fields: [evaluatedByPartyId], references: [id])
+  coachAssignment ClientCoachAssignment? @relation(fields: [coachAssignmentId], references: [id])
+  photos EvaluationPhoto[]
+  @@index([tenantId, clientId, evaluatedAt])
+  @@map("evaluation")
+  @@schema("public")
+}
+
+model EvaluationPhoto {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+  evaluationId String @map("evaluation_id") @db.Uuid
+  mediaAssetId String @map("media_asset_id") @db.Uuid
+  viewType String @map("view_type")
+  evaluation Evaluation @relation(fields: [evaluationId], references: [id])
+  mediaAsset MediaAsset @relation(fields: [mediaAssetId], references: [id])
+  @@unique([evaluationId, mediaAssetId])
+  @@map("evaluation_photo")
+  @@schema("public")
+}
+
+model WorkflowDefinition {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+  name String
+  version Int
+  status WorkflowStatus
+  createdAt DateTime @default(now()) @map("created_at")
+  activatedAt DateTime? @map("activated_at")
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  stages WorkflowStage[]
+  @@unique([tenantId, version])
+  @@index([tenantId, status])
+  @@map("workflow_definition")
+  @@schema("public")
+}
+
+model WorkflowStage {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+  workflowDefinitionId String @map("workflow_definition_id") @db.Uuid
+  sequence Int
+  stepType String @map("step_type")
+  config Json @default("{}")
+  isRequired Boolean @default(true) @map("is_required")
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  workflowDefinition WorkflowDefinition @relation(fields: [workflowDefinitionId], references: [id])
+  @@unique([tenantId, workflowDefinitionId, sequence])
+  @@map("workflow_stage")
+  @@schema("public")
+}
+
+model Subscription {
+  id String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+  clientId String @map("client_id") @db.Uuid
+  price Decimal @db.Decimal(12, 2)
+  startDate DateTime @map("start_date") @db.Date
+  durationMonths Int @map("duration_months")
+  endDate DateTime @map("end_date") @db.Date
+  status SubscriptionStatus @default(active)
+  previousSubscriptionId String? @map("previous_subscription_id") @db.Uuid
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  client Client @relation(fields: [clientId], references: [id])
+  previousSubscription Subscription? @relation("Renewals", fields: [previousSubscriptionId], references: [id])
+  renewals Subscription[] @relation("Renewals")
+  @@index([tenantId, clientId, status])
+  @@map("subscription")
+  @@schema("public")
+}
+
+model AuditLog {
+  id           String   @id @default(uuid()) @db.Uuid
+  tenantId     String   @map("tenant_id") @db.Uuid
+  actorPartyId String   @map("actor_party_id") @db.Uuid
+  action       String
+  resourceType String   @map("resource_type")
+  resourceId   String?  @map("resource_id") @db.Uuid
+  before       Json?
+  after        Json?
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  tenant     Tenant @relation(fields: [tenantId], references: [id])
+  actorParty Party  @relation(fields: [actorPartyId], references: [id])
+
+  @@index([tenantId, createdAt])
+  @@index([tenantId, actorPartyId, createdAt])
+  @@map("audit_log")
+  @@schema("public")
+}
+
+model Invite {
+  id         String    @id @default(uuid()) @db.Uuid
+  tenantId   String    @map("tenant_id") @db.Uuid
+  tokenHash  String    @unique @map("token_hash")
+  role       Role
+  scopeType  ScopeType @map("scope_type")
+  scopeId    String?   @map("scope_id") @db.Uuid
+  email      String
+  expiresAt  DateTime  @map("expires_at")
+  consumedAt DateTime? @map("consumed_at")
+  createdBy  String    @map("created_by") @db.Uuid
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  tenant         Tenant @relation(fields: [tenantId], references: [id])
+  createdByParty Party  @relation(fields: [createdBy], references: [id])
+
+  @@index([tenantId, email])
+  @@index([tenantId, expiresAt])
+  @@map("invite")
+  @@schema("public")
+}
+
 enum EvaluationCadence {
   weekly
   biweekly
@@ -149,5 +475,77 @@ enum SatisfactionMode {
   per_session
   periodic
 
+  @@schema("public")
+}
+
+enum PartyKind {
+  person
+  institution
+
+  @@schema("public")
+}
+
+enum PartyStatus {
+  active
+  inactive
+
+  @@schema("public")
+}
+
+enum Role {
+  OwnerAdmin
+  Coach
+  OrgAdmin
+  Client
+
+  @@schema("public")
+}
+
+enum ScopeType {
+  tenant
+  organization
+
+  @@schema("public")
+}
+
+enum OrganizationStatus {
+  active
+  inactive
+
+  @@schema("public")
+}
+
+enum ClientStatus {
+  active
+  paused
+  left
+  @@schema("public")
+}
+enum ConsentState {
+  granted
+  withdrawn
+  @@schema("public")
+}
+enum MediaStatus {
+  active
+  removed
+  @@schema("public")
+}
+enum EvaluationType {
+  baseline
+  periodic
+  @@schema("public")
+}
+enum WorkflowStatus {
+  draft
+  active
+  retired
+  @@schema("public")
+}
+enum SubscriptionStatus {
+  active
+  lapsed
+  renewed
+  cancelled
   @@schema("public")
 }
