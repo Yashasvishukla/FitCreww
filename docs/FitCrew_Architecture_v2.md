@@ -31,6 +31,7 @@ Multi-tenant SaaS. The platform bills tenants (coaching businesses). Inside a te
 **P4 — Everything that varies is data.** Rates, lifespans, cadences, fee-bearer, workflow stages: per-tenant configuration, never constants. The second tenant must work with zero code changes.
 **P5 — Phase 2 is substitution, not rewrite.** Manual→Razorpay and manual→BMI API are interfaces with swappable implementations, designed today. Authorization is not a phase-2 substitution: the AccessGate is the permanent in-app authorization boundary.
 **P6 — Every boundary is enforced twice.** UI/app-layer scoping for correctness of experience; database-layer enforcement for correctness of fact.
+**P7 — Implementation discipline is part of the architecture.** A design rule is not accepted until it has a code choke point, a test that can fail, and a review checklist item. Security and money controls are built in the first feature that needs them, never as a later hardening pass.
 
 ## 4. Technology stack (ADR-1, revised)
 
@@ -61,6 +62,8 @@ Multi-tenant SaaS. The platform bills tenants (coaching businesses). Inside a te
 *Platform tables* (tenants, platform subscriptions/billing) live in a separate `platform` schema without tenant RLS, owned by the Platform module — mirroring the PRD's hard split between *platform subscription* (tenant pays us) and *client subscription* (client pays the business).
 
 **Indexing discipline:** every composite index leads with `tenant_id` — e.g., `(tenant_id, coach_party_id, session_date desc)` on sessions, `(tenant_id, client_id, evaluated_at desc)` on evaluations — so RLS predicates and hot paths share index access. Monetary columns are `numeric(12,2)`, INR-fixed in MVP but stored per record.
+
+**Tenant-isolation implementation gate:** every new tenant-scoped model must ship with all of the following in the same change: `tenant_id not null`, an index whose first column is `tenant_id` for its hot paths, Prisma tenant-scoping coverage, an RLS policy using `current_setting('app.tenant_id')`, and an integration test proving a non-bypass application role cannot read another tenant's row. Raw SQL is allowed only inside `withTenant()` or explicitly platform-scoped code. The unscoped Prisma client is infrastructure-only and must not be imported by Server Actions, Route Handlers, application services, or tests outside the DB package.
 
 ## Part II — Domain & Object-Oriented Design
 
@@ -210,7 +213,7 @@ export interface AccessGate {
 
 ### 7.3 Authentication and multi-role experience
 
-Auth.js (NextAuth) v5 with a Credentials provider and **database-backed sessions** (not JWT sessions). Assignments are resolved **server-side per request** by querying `RoleAssignment` fresh, not baked into the session token — a revoked coach loses access immediately, which matters when off-boarding mid-dispute. Organization onboarding is invite-based: the owner issues a single-use expiring link binding (tenant, org, OrgAdmin); the org sets credentials and self-manages thereafter — the mechanism that removes the owner as enrollment bottleneck. "Acting as" is a UI context (a client-side selector persisted to a cookie) over the same permission union — it changes which dashboard renders, never what the gate will authorize.
+Auth.js (NextAuth) v5 with a Credentials provider and JWT sessions, because Auth.js does not support Credentials sign-in with database sessions. `user_account` and adapter tables are platform-wide because one identity may later have roles in several tenants; tenant context begins at `RoleAssignment`. Passwords use Argon2id; five failed attempts lock an account for 15 minutes, and unknown, locked, and invalid credentials have one generic outcome. Middleware is only an early cookie-presence redirect; every protected layout, Server Action, and Route Handler calls `auth()` server-side as the authoritative check. Assignments are resolved **server-side per request** by querying `RoleAssignment` fresh, not baked into the session token — a revoked coach loses access immediately, which matters when off-boarding mid-dispute. Organization onboarding is invite-based: the owner issues a single-use expiring link binding (tenant, org, OrgAdmin); the org sets credentials and self-manages thereafter — the mechanism that removes the owner as enrollment bottleneck. "Acting as" is a UI context (a client-side selector persisted to a cookie) over the same permission union — it changes which dashboard renders, never what the gate will authorize.
 
 ### 7.4 Authorization boundary decision
 
@@ -336,12 +339,17 @@ Client state machines advance against their tenant's definition. Adding "nutriti
 
 Money never reads ClientLifecycle tables directly — it reacts to events with IDs. These seams are the decomposition lines if ever needed, and the argument for why they won't be for years.
 
+**Repository structure discipline:** keep the repo intentionally small, but do not flatten the boundaries that protect correctness. `/apps/web` owns routes, Server Actions, UI composition, and request/session wiring only. `/apps/worker` owns scheduled/background entry points only. `/packages/db` owns Prisma schema, migrations, RLS helpers, `withTenant()`, tenant-scoped Prisma clients, and repository implementations. `/packages/domain` owns framework-free entities, aggregates, value objects, and pure rules. `/packages/application` owns use cases, `AccessGate`, `can()`, `scopeQuery()`, workflows, and ports. `/packages/ui` owns shared presentation components only. `/packages/config` owns shared tooling config only. No new package is added without a named boundary and an import rule.
+
+**Repo hygiene gate:** generated and machine-local artifacts (`.turbo/`, `*.tsbuildinfo`, `.DS_Store`, dependency folders) are not source architecture and must stay out of commits. Simplification means pruning noise and enforcing imports, not merging domain, database, application, and Next.js concerns into one folder.
+
 ## 13. Cross-cutting concerns
 
 **13.1 Performance posture:** at ceiling (~15k coaches, ~50–150k clients) peak write load is low tens/sec — one Postgres with headroom. Deliberately not pre-scaling; App Insights measures, replicas/cache added only against observed load. Real risks at this size are query quality (N+1 — Prisma query logging enabled in CI against a query-count budget per route, review gates) and photo bandwidth (offloaded to Blob/SAS by design).
 **13.2 Reliability:** zone-redundant Postgres, PITR 35d, blob soft-delete+versioning; RTO 4h / RPO 15m — proportionate to a business-hours SaaS, revisited at first external tenant.
 **13.3 Auditability:** append-only `AuditLog` for every money and access-sensitive action, written by the AccessGate and Money module — the single-choke-point design's payoff.
 **13.4 Testing strategy (risk-weighted):** ledger + commission get property-based tests (entries always balance; Σ accruals = Σ applicable cuts; window boundaries at exact month edges) plus golden scenarios mirroring the owner's real cases (mixed prices, mixed lifespans, org one-time payment, refund reversal). AccessGate gets a full (role × action × ownership) matrix including the multi-role owner. RLS gets integration tests attempting cross-tenant reads under a non-bypass role asserting zero rows. Pipeline: per-step units + definition-driven integration.
+**13.5 Security implementation gates:** password authentication uses a memory-hard hash (Argon2id preferred; bcrypt acceptable only with reviewed cost settings), database-backed sessions use secure/httpOnly/sameSite cookies, and login/invite/upload/sensitive mutation endpoints are rate-limited. Invite tokens are high-entropy, stored only as hashes, consumed once inside a transaction, and expire by default. Upload handlers enforce size limits, server-side MIME validation, malware posture appropriate to the deployment, and `sharp` re-encoding to strip EXIF/GPS. Secrets live only in environment/managed secret storage. The app database role must not own tables and must not have `BYPASSRLS`; migrations run with a separate privileged role. Audit payloads must redact secrets, credentials, raw tokens, and unnecessary health/media metadata.
 
 ## 14. Decision log (consolidated)
 
@@ -363,8 +371,8 @@ Ordering logic: each level is one coherent feature category; each stands only on
 
 ### Level 1 — Foundation: tenancy, identity, roles, access (the trust base)
 *Everything else is built on this; nothing above it ships without it.*
-Scope: monorepo skeleton (packages, `dependency-cruiser` boundary rules, CI); Postgres + Prisma with the tenant-scoping Client Extension, RLS policies + the `withTenant` transaction wrapper; tenant provisioning (seed config + default WorkflowDefinition); Auth.js with Credentials provider + database sessions; `Party`, `RoleAssignment`, `Engagement` aggregates with value objects; `AccessGate` (`can` + `scopeQuery` with specification functions); invite flows (coach; organization single-use expiring link); audit log skeleton; "acting as" context plumbing.
-Exit criteria: RLS cross-tenant test suite green; full permission-matrix tests green including the owner-is-also-org-coach case; an owner can create a tenant, invite a coach and an organization, and each logs into a correctly scoped (empty) world.
+Scope: monorepo skeleton following §12 repository structure discipline (packages, `dependency-cruiser` boundary rules, repo hygiene, CI); Postgres + Prisma with the tenant-scoping Client Extension, RLS policies + the `withTenant` transaction wrapper; tenant provisioning (seed config + default WorkflowDefinition); Auth.js with Credentials provider + database sessions; `Party`, `RoleAssignment`, `Engagement` aggregates with value objects; `AccessGate` (`can` + `scopeQuery` with specification functions); invite flows (coach; organization single-use expiring link); audit log skeleton; "acting as" context plumbing.
+Exit criteria: RLS cross-tenant test suite green; full permission-matrix tests green including the owner-is-also-org-coach case; static/import checks prove app code cannot import the unscoped Prisma client; security gates in §13.5 are implemented for auth and invites; an owner can create a tenant, invite a coach and an organization, and each logs into a correctly scoped (empty) world.
 
 ### Level 2 — Network & client onboarding (the business map)
 *The WhatsApp roster, replaced.*

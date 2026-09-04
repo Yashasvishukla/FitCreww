@@ -3,22 +3,30 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "main": "./src/index.ts",
-  "types": "./src/index.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "vitest run",
+    "test": "vitest run test/*.test.ts",
+    "test:integration": "vitest run test-integration/*.test.ts",
     "lint": "eslint src",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "migrate:check": "prisma validate --schema prisma/schema.prisma",
+    "migrate:deploy": "prisma migrate deploy --schema prisma/schema.prisma",
     "migrate:dev": "prisma migrate dev --schema prisma/schema.prisma",
-    "generate": "prisma generate --schema prisma/schema.prisma"
+    "generate": "prisma generate --schema prisma/schema.prisma",
+    "seed": "node prisma/seed.mjs"
   },
   "dependencies": {
     "@fitcrew/domain": "workspace:*",
+    "@node-rs/argon2": "2.2.0",
     "@prisma/client": "^5.20.0"
   },
   "devDependencies": {

@@ -10,3 +10,135 @@ body {
   font-size: var(--font-size-body);
   font-weight: var(--font-weight-regular);
 }
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.auth-page,
+.dashboard-page {
+  min-height: 100vh;
+  padding: var(--space-5);
+}
+
+.auth-page {
+  display: grid;
+  place-items: center;
+}
+
+.auth-panel,
+.session-panel {
+  width: min(100%, 28rem);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+  padding: var(--space-5);
+}
+
+.auth-panel h1,
+.dashboard-page h1,
+.session-panel h2 {
+  margin: 0;
+  font-size: var(--font-size-xl);
+  font-weight: 600;
+}
+
+.eyebrow {
+  margin: 0 0 var(--space-2);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.muted {
+  color: var(--color-text-secondary);
+}
+
+.auth-form {
+  display: grid;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}
+
+.auth-form label {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.auth-form input {
+  width: 100%;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  padding: 0.65rem 0.75rem;
+}
+
+.primary-button,
+.secondary-button {
+  min-height: 2.5rem;
+  border-radius: 6px;
+  padding: 0.5rem 0.85rem;
+}
+
+.primary-button {
+  border: 1px solid var(--color-accent);
+  background: var(--color-accent);
+  color: white;
+}
+
+.secondary-button {
+  border: 1px solid var(--color-border);
+  background: transparent;
+  color: var(--color-text);
+}
+
+.form-error {
+  margin: 0;
+  color: #b42318;
+}
+
+.success-message {
+  margin: var(--space-2) 0 0;
+  color: #067647;
+}
+
+.dashboard-page {
+  max-width: 68rem;
+  margin: 0 auto;
+}
+
+.dashboard-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-5);
+}
+
+.session-panel {
+  width: min(100%, 34rem);
+}
+
+@media (max-width: 480px) {
+  .auth-page,
+  .dashboard-page {
+    padding: var(--space-3);
+  }
+
+  .dashboard-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
