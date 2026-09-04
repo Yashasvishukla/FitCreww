@@ -1,6 +1,6 @@
 import { Prisma } from '@prisma/client';
 
-const DEFAULT_TENANT_SCOPED_MODELS = ['TenantConfig', 'Party', 'RoleAssignment', 'Engagement', 'Organization', 'Client', 'ClientCoachAssignment', 'ConsentRecord', 'MediaAsset', 'WorkflowDefinition', 'WorkflowStage', 'Evaluation', 'EvaluationPhoto', 'Subscription', 'AuditLog', 'Invite'] as const;
+const DEFAULT_TENANT_SCOPED_MODELS = ['TenantConfig', 'Party', 'RoleAssignment', 'Engagement', 'Organization', 'Client', 'ClientCoachAssignment', 'ConsentRecord', 'MediaAsset', 'WorkflowDefinition', 'WorkflowStage', 'Evaluation', 'EvaluationPhoto', 'Subscription', 'ExerciseCatalog', 'WorkoutPlan', 'PlanDay', 'TrainingSession', 'EvaluationSchedule', 'EvaluationDueEvent', 'AuditLog', 'Invite'] as const;
 
 type TenantScopedModel = (typeof DEFAULT_TENANT_SCOPED_MODELS)[number];
 
@@ -64,7 +64,7 @@ export function applyTenantScope(input: {
   if (input.operation === 'update' || input.operation === 'updateMany') {
     return {
       ...input.args,
-      where: scopeWhere(input.args.where, input.tenantId),
+      where: scopeWhere(input.args.where, input.tenantId, input.model),
       data: rejectTenantChange(input.args.data, input.tenantId),
     };
   }
@@ -79,7 +79,7 @@ export function applyTenantScope(input: {
   if (READ_OPERATIONS.has(input.operation) || WHERE_MUTATION_OPERATIONS.has(input.operation)) {
     return {
       ...input.args,
-      where: scopeWhere(input.args.where, input.tenantId),
+      where: scopeWhere(input.args.where, input.tenantId, input.model),
     };
   }
 
@@ -93,7 +93,7 @@ export function applyTenantScope(input: {
   if (WRITE_WITH_CREATE_OPERATIONS.has(input.operation)) {
     return {
       ...input.args,
-      where: scopeWhere(input.args.where, input.tenantId),
+      where: scopeWhere(input.args.where, input.tenantId, input.model),
       create: stampTenantOnData(input.args.create, input.tenantId),
       update: rejectTenantChange(input.args.update, input.tenantId),
     };
@@ -102,9 +102,10 @@ export function applyTenantScope(input: {
   return input.args;
 }
 
-function scopeWhere(where: unknown, tenantId: string): QueryArgs {
+function scopeWhere(where: unknown, tenantId: string, model?: string): QueryArgs {
+  const tenantPredicate = model === 'ExerciseCatalog' ? { OR: [{ tenantId }, { tenantId: null }] } : { tenantId };
   if (where === undefined) {
-    return { tenantId };
+    return tenantPredicate;
   }
 
   if (!isRecord(where)) {
@@ -117,7 +118,7 @@ function scopeWhere(where: unknown, tenantId: string): QueryArgs {
   }
 
   return {
-    AND: [{ ...where }, { tenantId }],
+    AND: [{ ...where }, tenantPredicate],
   };
 }
 
