@@ -1,10 +1,11 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { PrismaClient } from '@prisma/client';
+import { Prisma, PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { accessGateForPrincipal, consumeInvite, createInviteForPrincipal, createOrganizationAndInviteForUser, enrollClientForUser, listClientsForUser, listOrganizationsForUser, recordBaselineForUser, withTenant } from '../src/index.js';
-import { ConsoleEmailAdapter, createAccessGate } from '@fitcrew/application';
+import { accessGateForPrincipal, confirmPaymentForUser, confirmSettlementForUser, consumeInvite, createInviteForPrincipal, createOrganizationAndInviteForUser, createSettlementForUser, deletePayoutHandleForUser, downloadPayslipForUser, enrollClientForUser, getEarningsForUser, listClientsForUser, listOrganizationsForUser, PrismaLedgerRepository, recordBaselineForUser, recordClientPaymentForUser, recordOrganizationPaymentForUser, reverseClientPaymentForUser, savePayoutHandleForUser, updatePayoutHandleForUser, updateRefundClawbackRateForUser, withTenant } from '../src/index.js';
+import { ConsoleEmailAdapter, createAccessGate, postLedgerEntry } from '@fitcrew/application';
+import { MemoryPrivateBlobStorage } from '../src/media-pipeline.js';
 
 const tenantId = '11111111-1111-4111-8111-111111111111';
 const otherTenantId = '22222222-2222-4222-8222-222222222222';
@@ -88,6 +89,162 @@ describe('tenancy core RLS', () => {
         `,
       ),
     ).rejects.toThrow();
+  });
+
+  it('commits balanced journals and rejects mutation or an unbalanced commit at the database', async () => {
+    const ownerPartyId = randomUUID();
+    const clientPartyId = randomUUID();
+    const paymentId = randomUUID();
+
+    const posted = await withTenant(appPrisma, tenantId, async (tx) => {
+      await tx.party.createMany({ data: [
+        { id: ownerPartyId, tenantId, kind: 'person', displayName: 'Ledger Owner' },
+        { id: clientPartyId, tenantId, kind: 'person', displayName: 'Ledger Client' },
+      ] });
+      return postLedgerEntry(new PrismaLedgerRepository(tx), {
+        tenantId,
+        description: 'Confirmed client payment',
+        referenceType: 'payment',
+        referenceId: paymentId,
+        lines: [
+          { partyId: ownerPartyId, purpose: 'owner_cash', direction: 'debit', amountMinor: 250_000n },
+          { partyId: clientPartyId, purpose: 'client_receivable', direction: 'credit', amountMinor: 250_000n },
+        ],
+      });
+    });
+
+    await expect(withTenant(appPrisma, tenantId, (tx) => tx.ledgerEntry.updateMany({
+      where: { id: posted.id, tenantId },
+      data: { description: 'tampered' },
+    }))).rejects.toThrow(/permission denied|append-only/);
+    await expect(adminPrisma.ledgerEntry.update({
+      where: { id: posted.id },
+      data: { description: 'admin tamper attempt' },
+    })).rejects.toThrow(/append-only/);
+
+    await expect(withTenant(appPrisma, tenantId, async (tx) => {
+      const account = await tx.ledgerAccount.findFirstOrThrow({ where: { partyId: ownerPartyId } });
+      const unbalanced = await tx.ledgerEntry.create({
+        data: {
+          tenantId,
+          description: 'Unbalanced journal',
+          referenceType: 'correction',
+          referenceId: randomUUID(),
+        },
+      });
+      await tx.ledgerLine.create({
+        data: { tenantId, entryId: unbalanced.id, accountId: account.id, direction: 'debit', amount: '1.00' },
+      });
+      return tx.$executeRaw`SET CONSTRAINTS ledger_line_balance_check IMMEDIATE`;
+    })).rejects.toThrow(/balance to zero/);
+  });
+
+  it('records and manually confirms a client payment with ledger and audit atomically', async () => {
+    const userId = randomUUID(); const ownerId = randomUUID(); const coachId = randomUUID(); const clientPartyId = randomUUID(); const clientId = randomUUID(); const assignmentId = randomUUID(); const subscriptionId = randomUUID();
+    await adminPrisma.user.create({ data: { id: userId, email: `money-${userId}@fitcrew.test` } });
+    await withTenant(appPrisma, tenantId, async (tx) => {
+      await tx.party.createMany({ data: [
+        { id: ownerId, tenantId, userId, kind: 'person', displayName: 'Payment Owner' },
+        { id: coachId, tenantId, kind: 'person', displayName: 'Payment Coach' },
+        { id: clientPartyId, tenantId, kind: 'person', displayName: 'Payment Client' },
+      ] });
+      await tx.roleAssignment.create({ data: { tenantId, partyId: ownerId, role: 'OwnerAdmin', scopeType: 'tenant', validFrom: new Date('2026-01-01') } });
+      await tx.engagement.create({ data: { tenantId, upstreamPartyId: ownerId, downstreamPartyId: coachId, commissionRate: '20.00', commissionLifespanMonths: 3, validFrom: new Date('2026-01-01') } });
+      await tx.client.create({ data: { id: clientId, tenantId, partyId: clientPartyId, enrolledByPartyId: ownerId, customPrice: '3000.00' } });
+      await tx.clientCoachAssignment.create({ data: { id: assignmentId, tenantId, clientId, coachPartyId: coachId, assignedByPartyId: ownerId, validFrom: new Date('2026-01-01') } });
+      await tx.client.updateMany({ where: { id: clientId }, data: { currentCoachAssignmentId: assignmentId } });
+      await tx.subscription.create({ data: { id: subscriptionId, tenantId, clientId, price: '3000.00', startDate: new Date('2026-09-01'), durationMonths: 1, endDate: new Date('2026-09-30') } });
+    });
+    const temporaryHandle = await savePayoutHandleForUser(appPrisma, tenantId, userId, { partyId: ownerId, type: 'phone', value: '+919876543210' });
+    await updatePayoutHandleForUser(appPrisma, tenantId, userId, { handleId: temporaryHandle.id, partyId: ownerId, type: 'upi', value: 'owner.secondary@okbank', label: 'Secondary' });
+    await deletePayoutHandleForUser(appPrisma, tenantId, userId, temporaryHandle.id);
+    expect(await withTenant(appPrisma, tenantId, (tx) => tx.payoutHandle.count({ where: { id: temporaryHandle.id } }))).toBe(0);
+    await savePayoutHandleForUser(appPrisma, tenantId, userId, { partyId: ownerId, type: 'upi', value: 'owner@okbank', isDefault: true });
+    const pending = await recordClientPaymentForUser(appPrisma, tenantId, userId, { subscriptionId, amount: '3000.00', method: 'upi' });
+    const confirmed = await confirmPaymentForUser(appPrisma, tenantId, userId, { paymentId: pending.id, utr: 'UTR123456789' });
+    expect(confirmed).toMatchObject({ id: pending.id, status: 'confirmed' });
+    const evidence = await withTenant(appPrisma, tenantId, async (tx) => ({
+      payment: await tx.paymentRecord.findFirst({ where: { id: pending.id } }),
+      entry: await tx.ledgerEntry.findFirst({ where: { referenceType: 'payment', referenceId: pending.id }, include: { lines: true } }),
+      accrual: await tx.commissionAccrual.findFirst({ where: { paymentId: pending.id } }),
+      clockCount: await tx.clientEngagementClock.count({ where: { clientId } }),
+      audits: await tx.auditLog.count({ where: { resourceId: pending.id, resourceType: 'payment' } }),
+    }));
+    expect(evidence.payment).toMatchObject({ status: 'confirmed', confirmationSource: 'manual', utr: 'UTR123456789' });
+    expect(evidence.entry?.lines).toHaveLength(5);
+    expect(evidence.accrual).toMatchObject({ grossAmount: new Prisma.Decimal('3000.00'), rateApplied: new Prisma.Decimal('20.00'), commissionAmount: new Prisma.Decimal('600.00'), coachPayableAmount: new Prisma.Decimal('2400.00'), withinLifespan: true });
+    expect(evidence.clockCount).toBe(1);
+    expect(evidence.audits).toBe(2);
+    await expect(withTenant(appPrisma, tenantId, (tx) => tx.commissionAccrual.updateMany({ where: { paymentId: pending.id }, data: { commissionAmount: '1.00' } }))).rejects.toThrow(/snapshots are immutable/);
+    await expect(confirmPaymentForUser(appPrisma, tenantId, userId, { paymentId: pending.id, utr: 'UTR999999' })).rejects.toThrow('unavailable');
+    const secondPending = await recordClientPaymentForUser(appPrisma, tenantId, userId, { subscriptionId, amount: '1500.00', method: 'upi' });
+    await confirmPaymentForUser(appPrisma, tenantId, userId, { paymentId: secondPending.id, utr: 'UTRSECOND123' });
+    const paidOn = confirmed.confirmedAt.slice(0, 10); const storage = new MemoryPrivateBlobStorage();
+    const batch = await createSettlementForUser(appPrisma, tenantId, userId, { coachPartyId: coachId, periodStart: paidOn, periodEnd: paidOn, method: 'upi' });
+    expect(batch).toMatchObject({ accrualCount: 2, totalAmount: '3600.00', status: 'draft' });
+    const paid = await confirmSettlementForUser(appPrisma, tenantId, userId, { settlementId: batch.id, utr: 'PAYOUT123456' }, storage);
+    expect(paid.status).toBe('paid');
+    const document = await downloadPayslipForUser(appPrisma, tenantId, userId, paid.payslipMediaAssetId, storage);
+    expect(String.fromCharCode(...document.bytes.slice(0, 8))).toBe('%PDF-1.4');
+    const earnings = await getEarningsForUser(appPrisma, tenantId, userId);
+    expect(earnings.payables.find((row) => row.coachPartyId === coachId)).toBeUndefined();
+    expect(earnings.settlements).toContainEqual(expect.objectContaining({ id: batch.id, totalAmount: '3600', status: 'paid', payslipMediaAssetId: paid.payslipMediaAssetId }));
+    const settlementEntry = await withTenant(appPrisma, tenantId, (tx) => tx.ledgerEntry.findFirst({ where: { referenceType: 'settlement', referenceId: batch.id }, include: { lines: true } }));
+    expect(settlementEntry?.lines).toHaveLength(2);
+    const coachUserId = randomUUID(); await adminPrisma.user.create({ data: { id: coachUserId, email: `coach-money-${coachUserId}@fitcrew.test` } });
+    await withTenant(appPrisma, tenantId, async (tx) => { await tx.party.updateMany({ where: { id: coachId }, data: { userId: coachUserId } }); await tx.roleAssignment.create({ data: { tenantId, partyId: coachId, role: 'Coach', scopeType: 'tenant', validFrom: new Date('2026-01-01') } }); });
+    const coachEarnings = await getEarningsForUser(appPrisma, tenantId, coachUserId);
+    expect(coachEarnings.owner).toBe(false); expect(coachEarnings.accruals.every((row) => row.coachPartyId === coachId)).toBe(true); expect(coachEarnings.settlements).toContainEqual(expect.objectContaining({ id: batch.id }));
+    await expect(downloadPayslipForUser(appPrisma, tenantId, coachUserId, paid.payslipMediaAssetId, storage)).resolves.toMatchObject({ filename: expect.stringContaining(batch.id) });
+    await expect(withTenant(appPrisma, tenantId, (tx) => tx.payslip.updateMany({ where: { settlementId: batch.id }, data: { netPaid: '1.00' } }))).rejects.toThrow(/append-only/);
+    await expect(confirmSettlementForUser(appPrisma, tenantId, userId, { settlementId: batch.id, utr: 'DUPLICATEPAYOUT' }, storage)).rejects.toThrow(/unavailable/);
+
+    // 4.5: a paid period stays immutable; its refund is a linked reversal and signed next-period correction.
+    await updateRefundClawbackRateForUser(appPrisma, tenantId, userId, '100.00');
+    const refund = await reverseClientPaymentForUser(appPrisma, tenantId, userId, { paymentId: pending.id, method: 'upi', utr: 'REFUND123456' });
+    expect(refund).toMatchObject({ reversesPaymentId: pending.id, coachClawbackAmount: '2400.00', ownerAbsorptionAmount: '0.00' });
+    const refundEvidence = await withTenant(appPrisma, tenantId, async (tx) => ({
+      original: await tx.paymentRecord.findFirstOrThrow({ where: { id: pending.id } }),
+      correction: await tx.paymentRecord.findFirstOrThrow({ where: { id: refund.id } }),
+      correctionAccrual: await tx.commissionAccrual.findFirstOrThrow({ where: { paymentId: refund.id } }),
+      correctionEntry: await tx.ledgerEntry.findFirstOrThrow({ where: { referenceType: 'correction', referenceId: refund.id }, include: { lines: true } }),
+      originalEntry: await tx.ledgerEntry.findFirstOrThrow({ where: { referenceType: 'payment', referenceId: pending.id } }),
+      originalPayslipCount: await tx.payslip.count({ where: { settlementId: batch.id } }),
+    }));
+    expect(refundEvidence.original.status).toBe('reversed');
+    expect(refundEvidence.correction).toMatchObject({ status: 'confirmed', purpose: 'correction', reversesPaymentId: pending.id });
+    expect(refundEvidence.correctionAccrual).toMatchObject({ kind: 'correction', grossAmount: new Prisma.Decimal('-3000.00'), commissionAmount: new Prisma.Decimal('-600.00'), coachPayableAmount: new Prisma.Decimal('-2400.00'), settlementId: null });
+    expect(refundEvidence.correctionEntry.reversesEntryId).toBe(refundEvidence.originalEntry.id);
+    expect(refundEvidence.correctionEntry.lines).toHaveLength(3);
+    expect(refundEvidence.originalPayslipCount).toBe(1);
+    const reversedBalances = await withTenant(appPrisma, tenantId, (tx) => tx.$queryRaw<Array<{ purpose: string; balance: Prisma.Decimal }>>`
+      SELECT a.purpose::text AS purpose,
+        SUM(CASE WHEN l.direction = 'debit' THEN l.amount ELSE -l.amount END) AS balance
+      FROM public.ledger_line l JOIN public.ledger_account a ON a.id = l.account_id
+      WHERE l.entry_id IN (${refundEvidence.originalEntry.id}::uuid, ${refundEvidence.correctionEntry.id}::uuid)
+      GROUP BY a.purpose
+    `);
+    expect(reversedBalances.every((row) => row.balance.equals(0))).toBe(true);
+    await expect(reverseClientPaymentForUser(appPrisma, tenantId, userId, { paymentId: pending.id, method: 'upi', utr: 'REFUNDAGAIN123' })).rejects.toThrow(/confirmed, unreversed/);
+
+    const nextPayment = await recordClientPaymentForUser(appPrisma, tenantId, userId, { subscriptionId, amount: '4500.00', method: 'upi' });
+    await confirmPaymentForUser(appPrisma, tenantId, userId, { paymentId: nextPayment.id, utr: 'NEXTCYCLE1234' });
+    const nextBatch = await createSettlementForUser(appPrisma, tenantId, userId, { coachPartyId: coachId, periodStart: paidOn, periodEnd: paidOn, method: 'upi' });
+    expect(nextBatch).toMatchObject({ accrualCount: 2, totalAmount: '1200.00' });
+    const nextPaid = await confirmSettlementForUser(appPrisma, tenantId, userId, { settlementId: nextBatch.id, utr: 'NEXTPAYOUT123' }, storage);
+    const nextPayslip = await withTenant(appPrisma, tenantId, (tx) => tx.payslip.findFirstOrThrow({ where: { settlementId: nextBatch.id } }));
+    expect(nextPayslip.detail).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'correction', paymentId: refund.id, net: '-2400' })]));
+    expect(nextPaid.status).toBe('paid');
+
+    // Organization agreement collection is one-time and follows the same pending -> manual confirmation -> ledger path.
+    const organizationPartyId = randomUUID(); const organizationId = randomUUID();
+    await withTenant(appPrisma, tenantId, async (tx) => { await tx.party.create({ data: { id: organizationPartyId, tenantId, kind: 'institution', displayName: 'Money Partner Org' } }); await tx.organization.create({ data: { id: organizationId, tenantId, partyId: organizationPartyId, agreementTerms: { oneTimePayment: true } } }); });
+    const orgPending = await recordOrganizationPaymentForUser(appPrisma, tenantId, userId, { organizationId, amount: '10000.00', method: 'upi' });
+    const orgConfirmed = await confirmPaymentForUser(appPrisma, tenantId, userId, { paymentId: orgPending.id, utr: 'ORGAGREE1234' });
+    expect(orgConfirmed).toMatchObject({ status: 'confirmed', commissionAmount: null, coachPayableAmount: null });
+    const orgEntry = await withTenant(appPrisma, tenantId, (tx) => tx.ledgerEntry.findFirst({ where: { referenceType: 'payment', referenceId: orgPending.id }, include: { lines: { include: { account: true } } } }));
+    expect(orgEntry?.lines).toHaveLength(2); expect(orgEntry?.lines.map((line) => line.account.purpose)).toEqual(expect.arrayContaining(['owner_cash', 'org_agreement_receivable']));
+    await expect(recordOrganizationPaymentForUser(appPrisma, tenantId, userId, { organizationId, amount: '1.00', method: 'other' })).rejects.toThrow(/already has an agreement payment/);
   });
 
   it('applies tenant isolation to parties', async () => {

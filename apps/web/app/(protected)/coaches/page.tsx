@@ -3,13 +3,13 @@ import { listCoachRosterForUser } from '@fitcrew/db';
 import { CoachTermsForm } from './terms-form';
 import { CoachInviteForm } from './invite-form';
 import { NetworkNav } from '../network-nav';
-
-const demoTenantId = '11111111-1111-4111-8111-111111111111';
+import { DEMO_TENANT_ID, requireFeature } from '@/lib/authorization';
 
 export default async function CoachesPage({ searchParams }: { searchParams: { tenantId?: string } }) {
   const session = await auth();
   if (!session?.user?.id) return null;
-  const tenantId = searchParams.tenantId ?? demoTenantId;
+  const tenantId = searchParams.tenantId ?? DEMO_TENANT_ID;
+  await requireFeature(session.user.id, tenantId, ['OwnerAdmin']);
   let coaches; let loadError = false;
   try { coaches = await listCoachRosterForUser((await import('@fitcrew/db')).prisma, tenantId, session.user.id); }
   catch { coaches = []; loadError = true; }

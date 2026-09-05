@@ -40,6 +40,15 @@ model Tenant {
   satisfactionRecords SatisfactionRecord[]
   auditLogs           AuditLog[]
   invites             Invite[]
+  ledgerAccounts      LedgerAccount[]
+  ledgerEntries       LedgerEntry[]
+  ledgerLines         LedgerLine[]
+  payoutHandles       PayoutHandle[]
+  payments            PaymentRecord[]
+  engagementClocks    ClientEngagementClock[]
+  commissionAccruals  CommissionAccrual[]
+  settlements         Settlement[]
+  payslips            Payslip[]
 
   @@map("tenant")
   @@schema("platform")
@@ -113,6 +122,7 @@ model TenantConfig {
   tenantId                        String            @id @map("tenant_id") @db.Uuid
   defaultCommissionRate           Decimal           @map("default_commission_rate") @db.Decimal(5, 2)
   defaultCommissionLifespanMonths Int               @map("default_commission_lifespan_months")
+  refundCoachClawbackRate         Decimal           @default(100) @map("refund_coach_clawback_rate") @db.Decimal(5, 2)
   defaultEvaluationCadence        EvaluationCadence @map("default_evaluation_cadence")
   feeBearer                       FeeBearer         @default(tenant) @map("fee_bearer")
   satisfactionMode                SatisfactionMode  @default(per_session) @map("satisfaction_mode")
@@ -152,6 +162,12 @@ model Party {
   createdWorkoutPlans   WorkoutPlan[]           @relation("WorkoutPlanCreatedBy")
   trainingSessions      TrainingSession[]       @relation("TrainingSessionCoach")
   satisfactionRecords   SatisfactionRecord[]
+  ledgerAccounts        LedgerAccount[]
+  payoutHandles         PayoutHandle[]
+  paymentsMade          PaymentRecord[] @relation("PaymentPayer")
+  paymentsReceived      PaymentRecord[] @relation("PaymentPayee")
+  paymentsConfirmed     PaymentRecord[] @relation("PaymentConfirmedBy")
+  coachSettlements      Settlement[]
 
   @@unique([tenantId, userId])
   @@index([tenantId, kind, status])
@@ -196,6 +212,8 @@ model Engagement {
   tenant          Tenant @relation(fields: [tenantId], references: [id])
   upstreamParty   Party  @relation("EngagementUpstream", fields: [upstreamPartyId], references: [id])
   downstreamParty Party  @relation("EngagementDownstream", fields: [downstreamPartyId], references: [id])
+  engagementClocks ClientEngagementClock[]
+  commissionAccruals CommissionAccrual[]
 
   @@index([tenantId, upstreamPartyId])
   @@index([tenantId, downstreamPartyId])
@@ -215,6 +233,7 @@ model Organization {
   tenant  Tenant   @relation(fields: [tenantId], references: [id])
   party   Party    @relation(fields: [partyId], references: [id])
   clients Client[]
+  payments PaymentRecord[]
 
   @@index([tenantId, status])
   @@map("organization")
@@ -252,6 +271,8 @@ model Client {
   evaluationSchedule     EvaluationSchedule?
   evaluationDueEvents    EvaluationDueEvent[]
   satisfactionRecords    SatisfactionRecord[]
+  engagementClocks       ClientEngagementClock[]
+  commissionAccruals     CommissionAccrual[]
 
   @@unique([tenantId, partyId])
   @@index([tenantId, organizationId, status])
@@ -276,6 +297,8 @@ model ClientCoachAssignment {
   currentForClient Client?           @relation("CurrentCoach")
   evaluations      Evaluation[]
   trainingSessions TrainingSession[]
+  engagementClocks ClientEngagementClock[]
+  commissionAccruals CommissionAccrual[]
 
   @@index([tenantId, coachPartyId, validTo])
   @@map("client_coach_assignment")
@@ -319,6 +342,8 @@ model MediaAsset {
   tenant           Tenant            @relation(fields: [tenantId], references: [id])
   client           Client?           @relation(fields: [clientId], references: [id])
   evaluationPhotos EvaluationPhoto[]
+  paymentProofs    PaymentRecord[]
+  payslipDocuments Payslip[]
 
   @@index([tenantId, clientId, status])
   @@map("media_asset")
@@ -434,6 +459,7 @@ model Subscription {
   client               Client         @relation(fields: [clientId], references: [id])
   previousSubscription Subscription?   @relation("Renewals", fields: [previousSubscriptionId], references: [id])
   renewals             Subscription[]  @relation("Renewals")
+  payments             PaymentRecord[]
 
   @@index([tenantId, clientId, status])
   @@map("subscription")
@@ -599,6 +625,224 @@ model Invite {
   @@schema("public")
 }
 
+model LedgerAccount {
+  id        String               @id @default(uuid()) @db.Uuid
+  tenantId  String               @map("tenant_id") @db.Uuid
+  partyId   String               @map("party_id") @db.Uuid
+  purpose   LedgerAccountPurpose
+  currency  String               @default("INR")
+  createdAt DateTime             @default(now()) @map("created_at")
+
+  tenant Tenant       @relation(fields: [tenantId], references: [id])
+  party  Party        @relation(fields: [partyId], references: [id])
+  lines  LedgerLine[]
+
+  @@unique([tenantId, partyId, purpose, currency])
+  @@unique([id, tenantId])
+  @@index([tenantId, purpose])
+  @@map("ledger_account")
+  @@schema("public")
+}
+
+model LedgerEntry {
+  id            String              @id @default(uuid()) @db.Uuid
+  tenantId      String              @map("tenant_id") @db.Uuid
+  description   String
+  referenceType LedgerReferenceType @map("reference_type")
+  referenceId   String              @map("reference_id") @db.Uuid
+  reversesEntryId String?            @unique @map("reverses_entry_id") @db.Uuid
+  createdAt     DateTime            @default(now()) @map("created_at")
+
+  tenant Tenant       @relation(fields: [tenantId], references: [id])
+  lines  LedgerLine[]
+  reverses LedgerEntry? @relation("LedgerReversal", fields: [reversesEntryId], references: [id])
+  reversedBy LedgerEntry? @relation("LedgerReversal")
+
+  @@unique([id, tenantId])
+  @@unique([tenantId, referenceType, referenceId])
+  @@index([tenantId, createdAt])
+  @@map("ledger_entry")
+  @@schema("public")
+}
+
+model LedgerLine {
+  id        String          @id @default(uuid()) @db.Uuid
+  tenantId  String          @map("tenant_id") @db.Uuid
+  entryId   String          @map("entry_id") @db.Uuid
+  accountId String          @map("account_id") @db.Uuid
+  direction LedgerDirection
+  amount    Decimal         @db.Decimal(18, 2)
+  createdAt DateTime        @default(now()) @map("created_at")
+
+  tenant  Tenant        @relation(fields: [tenantId], references: [id])
+  entry   LedgerEntry   @relation(fields: [entryId, tenantId], references: [id, tenantId])
+  account LedgerAccount @relation(fields: [accountId, tenantId], references: [id, tenantId])
+
+  @@index([tenantId, entryId])
+  @@index([tenantId, accountId, createdAt])
+  @@map("ledger_line")
+  @@schema("public")
+}
+
+model PayoutHandle {
+  id        String             @id @default(uuid()) @db.Uuid
+  tenantId  String             @map("tenant_id") @db.Uuid
+  partyId   String             @map("party_id") @db.Uuid
+  type      PayoutHandleType
+  value     String
+  label     String?
+  isDefault Boolean            @default(false) @map("is_default")
+  createdAt DateTime           @default(now()) @map("created_at")
+  updatedAt DateTime           @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  party  Party  @relation(fields: [partyId], references: [id])
+
+  @@unique([tenantId, partyId, type, value])
+  @@index([tenantId, partyId, isDefault])
+  @@map("payout_handle")
+  @@schema("public")
+}
+
+model PaymentRecord {
+  id                    String                    @id @default(uuid()) @db.Uuid
+  tenantId              String                    @map("tenant_id") @db.Uuid
+  payerPartyId           String                    @map("payer_party_id") @db.Uuid
+  payeePartyId           String                    @map("payee_party_id") @db.Uuid
+  subscriptionId         String?                   @map("subscription_id") @db.Uuid
+  organizationId         String?                   @map("organization_id") @db.Uuid
+  reversesPaymentId      String?                   @unique @map("reverses_payment_id") @db.Uuid
+  purpose                PaymentPurpose
+  amount                 Decimal                   @db.Decimal(18, 2)
+  method                 PaymentMethod
+  status                 PaymentStatus             @default(pending)
+  utr                     String?
+  proofMediaAssetId       String?                   @map("proof_media_asset_id") @db.Uuid
+  confirmationSource      PaymentConfirmationSource? @map("confirmation_source")
+  confirmedByPartyId      String?                   @map("confirmed_by_party_id") @db.Uuid
+  confirmedAt             DateTime?                 @map("confirmed_at")
+  createdAt               DateTime                  @default(now()) @map("created_at")
+
+  tenant           Tenant        @relation(fields: [tenantId], references: [id])
+  payer            Party         @relation("PaymentPayer", fields: [payerPartyId], references: [id])
+  payee            Party         @relation("PaymentPayee", fields: [payeePartyId], references: [id])
+  subscription     Subscription? @relation(fields: [subscriptionId], references: [id])
+  organization     Organization? @relation(fields: [organizationId], references: [id])
+  reversesPayment  PaymentRecord? @relation("PaymentReversal", fields: [reversesPaymentId], references: [id])
+  reversedBy       PaymentRecord? @relation("PaymentReversal")
+  proofMediaAsset  MediaAsset?   @relation(fields: [proofMediaAssetId], references: [id])
+  confirmedBy      Party?        @relation("PaymentConfirmedBy", fields: [confirmedByPartyId], references: [id])
+  commissionAccruals CommissionAccrual[]
+  payoutForSettlement Settlement? @relation("SettlementPayout")
+
+  @@unique([id, tenantId])
+  @@index([tenantId, status, createdAt])
+  @@index([tenantId, payerPartyId, createdAt])
+  @@map("payment_record")
+  @@schema("public")
+}
+
+model ClientEngagementClock {
+  id                String   @id @default(uuid()) @db.Uuid
+  tenantId          String   @map("tenant_id") @db.Uuid
+  clientId          String   @map("client_id") @db.Uuid
+  engagementId      String   @map("engagement_id") @db.Uuid
+  coachAssignmentId String   @map("coach_assignment_id") @db.Uuid
+  anchorAt          DateTime @map("anchor_at")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  tenant          Tenant                @relation(fields: [tenantId], references: [id])
+  client          Client                @relation(fields: [clientId], references: [id])
+  engagement      Engagement            @relation(fields: [engagementId], references: [id])
+  coachAssignment ClientCoachAssignment @relation(fields: [coachAssignmentId], references: [id])
+
+  @@unique([tenantId, clientId, engagementId, coachAssignmentId])
+  @@index([tenantId, engagementId])
+  @@map("client_engagement_clock")
+  @@schema("public")
+}
+
+model Settlement {
+  id               String           @id @default(uuid()) @db.Uuid
+  tenantId         String           @map("tenant_id") @db.Uuid
+  coachPartyId     String           @map("coach_party_id") @db.Uuid
+  periodStart      DateTime         @map("period_start") @db.Date
+  periodEnd        DateTime         @map("period_end") @db.Date
+  grossRevenue     Decimal          @map("gross_revenue") @db.Decimal(18, 2)
+  commissionAmount Decimal          @map("commission_amount") @db.Decimal(18, 2)
+  totalAmount      Decimal          @map("total_amount") @db.Decimal(18, 2)
+  status           SettlementStatus @default(draft)
+  payoutPaymentId  String?          @unique @map("payout_payment_id") @db.Uuid
+  createdAt        DateTime         @default(now()) @map("created_at")
+  paidAt           DateTime?        @map("paid_at")
+
+  tenant        Tenant          @relation(fields: [tenantId], references: [id])
+  coachParty    Party           @relation(fields: [coachPartyId], references: [id])
+  payoutPayment PaymentRecord?  @relation("SettlementPayout", fields: [payoutPaymentId], references: [id])
+  accruals      CommissionAccrual[]
+  payslip       Payslip?
+
+  @@unique([id, tenantId])
+  @@index([tenantId, coachPartyId, status])
+  @@map("settlement")
+  @@schema("public")
+}
+
+model Payslip {
+  id                   String   @id @default(uuid()) @db.Uuid
+  tenantId             String   @map("tenant_id") @db.Uuid
+  settlementId         String   @unique @map("settlement_id") @db.Uuid
+  grossRevenue         Decimal  @map("gross_revenue") @db.Decimal(18, 2)
+  commissionDeducted   Decimal  @map("commission_deducted") @db.Decimal(18, 2)
+  netPaid              Decimal  @map("net_paid") @db.Decimal(18, 2)
+  detail               Json
+  documentMediaAssetId String   @unique @map("document_media_asset_id") @db.Uuid
+  issuedAt             DateTime @default(now()) @map("issued_at")
+
+  tenant        Tenant      @relation(fields: [tenantId], references: [id])
+  settlement    Settlement  @relation(fields: [settlementId], references: [id])
+  document      MediaAsset  @relation(fields: [documentMediaAssetId], references: [id])
+
+  @@index([tenantId, issuedAt])
+  @@map("payslip")
+  @@schema("public")
+}
+
+model CommissionAccrual {
+  id                    String   @id @default(uuid()) @db.Uuid
+  tenantId              String   @map("tenant_id") @db.Uuid
+  paymentId             String   @map("payment_id") @db.Uuid
+  kind                  CommissionAccrualKind @default(earning)
+  reversesAccrualId     String?  @unique @map("reverses_accrual_id") @db.Uuid
+  engagementId          String   @map("engagement_id") @db.Uuid
+  clientId              String   @map("client_id") @db.Uuid
+  coachAssignmentId     String   @map("coach_assignment_id") @db.Uuid
+  grossAmount           Decimal  @map("gross_amount") @db.Decimal(18, 2)
+  rateApplied           Decimal  @map("rate_applied") @db.Decimal(5, 2)
+  lifespanMonthsApplied Int      @map("lifespan_months_applied")
+  windowAnchorAt        DateTime @map("window_anchor_at")
+  windowEndAt           DateTime @map("window_end_at")
+  commissionAmount      Decimal  @map("commission_amount") @db.Decimal(18, 2)
+  coachPayableAmount    Decimal  @map("coach_payable_amount") @db.Decimal(18, 2)
+  withinLifespan        Boolean  @map("within_lifespan")
+  settlementId          String?  @map("settlement_id") @db.Uuid
+  createdAt             DateTime @default(now()) @map("created_at")
+
+  tenant          Tenant                @relation(fields: [tenantId], references: [id])
+  payment         PaymentRecord         @relation(fields: [paymentId], references: [id])
+  reversesAccrual CommissionAccrual?     @relation("CommissionAccrualReversal", fields: [reversesAccrualId], references: [id])
+  reversedBy      CommissionAccrual?     @relation("CommissionAccrualReversal")
+  engagement      Engagement            @relation(fields: [engagementId], references: [id])
+  client          Client                @relation(fields: [clientId], references: [id])
+  coachAssignment ClientCoachAssignment @relation(fields: [coachAssignmentId], references: [id])
+  settlement      Settlement?           @relation(fields: [settlementId], references: [id])
+
+  @@unique([tenantId, paymentId, engagementId])
+  @@index([tenantId, coachAssignmentId, settlementId])
+  @@map("commission_accrual")
+  @@schema("public")
+}
+
 enum TenantStatus {
   active
   suspended
@@ -718,6 +962,87 @@ enum EvaluationDueStatus {
   reminded
   completed
   dismissed
+
+  @@schema("public")
+}
+
+enum LedgerAccountPurpose {
+  client_receivable
+  owner_cash
+  coach_payable
+  commission_income
+  org_agreement_receivable
+  refund_absorption_expense
+
+  @@schema("public")
+}
+
+enum LedgerReferenceType {
+  payment
+  settlement
+  correction
+
+  @@schema("public")
+}
+
+enum LedgerDirection {
+  debit
+  credit
+
+  @@schema("public")
+}
+
+enum PayoutHandleType {
+  upi
+  phone
+  qr
+
+  @@schema("public")
+}
+
+enum PaymentPurpose {
+  client_subscription
+  coach_payout
+  org_agreement
+  correction
+
+  @@schema("public")
+}
+
+enum PaymentMethod {
+  upi
+  qr
+  phone
+  other
+
+  @@schema("public")
+}
+
+enum PaymentStatus {
+  pending
+  confirmed
+  reversed
+
+  @@schema("public")
+}
+
+enum PaymentConfirmationSource {
+  manual
+  gateway
+
+  @@schema("public")
+}
+
+enum SettlementStatus {
+  draft
+  paid
+
+  @@schema("public")
+}
+
+enum CommissionAccrualKind {
+  earning
+  correction
 
   @@schema("public")
 }
