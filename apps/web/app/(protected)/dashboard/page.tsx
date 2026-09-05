@@ -8,6 +8,7 @@ export default async function DashboardPage() {
 
   return (
     <main className="dashboard-page">
+      <NetworkNav />
       <header className="dashboard-header">
         <div>
           <p className="eyebrow">FitCrew</p>
@@ -18,7 +19,6 @@ export default async function DashboardPage() {
           <button className="secondary-button" type="submit">Sign out</button>
         </form>
       </header>
-      <NetworkNav />
       <section className="session-panel" aria-label="Session verification">
         <h2>Server action check</h2>
         <SessionCheck />

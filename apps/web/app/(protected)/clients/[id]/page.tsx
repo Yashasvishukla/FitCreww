@@ -1,4 +1,20 @@
 import { auth } from '@/auth';
 import { listClientsForUser, prisma } from '@fitcrew/db';
 import { BaselineForm } from './baseline-form';
-export default async function ClientIntakePage({ params, searchParams }: { params: { id: string }; searchParams: { tenantId?: string } }) { const session = await auth(); if (!session?.user?.id) return null; const tenantId = searchParams.tenantId ?? '11111111-1111-4111-8111-111111111111'; let client = null; try { client = (await listClientsForUser(prisma, tenantId, session.user.id)).find((entry) => entry.clientId === params.id) ?? null; } catch { client = null; } if (!client) return <main className="dashboard-page"><p className="form-error" role="alert">Client not found or outside your scope.</p></main>; return <main className="dashboard-page"><header className="dashboard-header"><div><p className="eyebrow">Baseline intake / {client.name}</p><h1>Baseline intake</h1><p className="muted">Capture the initial measurements, posture notes, and consented progress photo.</p></div><a className="secondary-button" href="/clients">Clients</a></header><section className="surface"><div className="section-heading"><div><p className="eyebrow">Capture permissions</p><h2>{client.photoConsent ? 'Photo capture enabled' : 'Photo capture disabled'}</h2></div></div><p className="muted">{client.photoConsent ? 'This client has granted progress-photo consent.' : 'A consent record is required before a photo can be captured.'}</p><BaselineForm tenantId={tenantId} clientId={params.id} photoConsent={client.photoConsent} /></section></main>; }
+import { NetworkNav } from '../../network-nav';
+
+export default async function ClientIntakePage({ params, searchParams }: { params: { id: string }; searchParams: { tenantId?: string } }) {
+  const session = await auth();
+  if (!session?.user?.id) return null;
+  const tenantId = searchParams.tenantId ?? '11111111-1111-4111-8111-111111111111';
+  let client = null;
+  try {
+    client = (await listClientsForUser(prisma, tenantId, session.user.id)).find((entry) => entry.clientId === params.id) ?? null;
+  } catch {
+    client = null;
+  }
+
+  if (!client) return <main className="dashboard-page"><NetworkNav /><section className="surface"><p className="form-error" role="alert">Client not found or outside your scope.</p></section></main>;
+
+  return <main className="dashboard-page"><NetworkNav /><header className="dashboard-header"><div><p className="eyebrow">Baseline intake / {client.name}</p><h1>Baseline intake</h1><p className="muted">Capture the initial measurements, posture notes, and consented progress photo.</p></div><a className="secondary-button" href={`/clients?tenantId=${tenantId}`}>Back to clients</a></header><section className="surface"><div className="section-heading"><div><p className="eyebrow">Capture permissions</p><h2>{client.photoConsent ? 'Photo capture enabled' : 'Photo capture disabled'}</h2></div></div><p className="muted">{client.photoConsent ? 'This client has granted progress-photo consent.' : 'A consent record is required before a photo can be captured.'}</p><BaselineForm tenantId={tenantId} clientId={params.id} photoConsent={client.photoConsent} /></section></main>;
+}
