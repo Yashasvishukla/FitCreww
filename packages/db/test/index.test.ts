@@ -34,7 +34,7 @@ describe('credential primitives', () => {
 
 describe('tenant-scoping query rewrite', () => {
   it('documents the current tenant-scoped Prisma models', () => {
-    expect(TENANT_SCOPED_MODELS).toEqual(['TenantConfig', 'Party', 'RoleAssignment', 'Engagement', 'Organization', 'Client', 'ClientCoachAssignment', 'ConsentRecord', 'MediaAsset', 'WorkflowDefinition', 'WorkflowStage', 'Evaluation', 'EvaluationPhoto', 'Subscription', 'ExerciseCatalog', 'WorkoutPlan', 'PlanDay', 'TrainingSession', 'EvaluationSchedule', 'EvaluationDueEvent', 'AuditLog', 'Invite']);
+    expect(TENANT_SCOPED_MODELS).toEqual(['TenantConfig', 'Party', 'RoleAssignment', 'Engagement', 'Organization', 'Client', 'ClientCoachAssignment', 'ConsentRecord', 'MediaAsset', 'WorkflowDefinition', 'WorkflowStage', 'Evaluation', 'EvaluationPhoto', 'SatisfactionRecord', 'Subscription', 'ExerciseCatalog', 'WorkoutPlan', 'PlanDay', 'TrainingSession', 'EvaluationSchedule', 'EvaluationDueEvent', 'AuditLog', 'Invite']);
   });
 
   it('adds tenantId to read filters', () => {

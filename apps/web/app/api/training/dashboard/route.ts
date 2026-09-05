@@ -1,0 +1,4 @@
+import { auth } from '@/auth';
+import { cleanTrainingOperationsError, listTrainingDashboardForUser, prisma } from '@fitcrew/db';
+import { NextResponse } from 'next/server';
+export async function GET(request: Request) { const session = await auth(); if (!session?.user?.id) return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 }); const url = new URL(request.url); const tenantId = url.searchParams.get('tenantId'); const clientId = url.searchParams.get('clientId') ?? undefined; if (!tenantId) return NextResponse.json({ error: 'tenantId is required.' }, { status: 400 }); try { return NextResponse.json(await listTrainingDashboardForUser(prisma, tenantId, session.user.id, clientId)); } catch (error) { return NextResponse.json({ error: cleanTrainingOperationsError(error) }, { status: 403 }); } }

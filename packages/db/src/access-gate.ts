@@ -27,7 +27,7 @@ export async function resolvePrincipal(
     partyId: party.id,
     assignments: party.roleAssignments.map((assignment): PrincipalAssignment => ({
       role: assignment.role,
-      scopeType: assignment.scopeType === 'organization' ? 'organization' : 'tenant',
+      scopeType: assignment.scopeType === 'organization' ? 'organization' : assignment.scopeType === 'self' ? 'self' : 'tenant',
       scopeId: assignment.scopeId,
       validFrom: assignment.validFrom.toISOString().slice(0, 10),
       validTo: assignment.validTo?.toISOString().slice(0, 10) ?? null,
@@ -71,4 +71,8 @@ export async function canUserAccess(
       return accessGateForPrincipal(tx, principal).can(principal, action, resource);
     },
   );
+}
+
+export async function getPrincipalForUser(prisma: PrismaClient, tenantId: string, userId: string): Promise<Principal | null> {
+  return withTenant(prisma as unknown as TransactionCapableClient<Prisma.TransactionClient>, tenantId, (tx) => resolvePrincipal(tx, tenantId, userId));
 }

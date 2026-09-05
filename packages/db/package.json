@@ -29,6 +29,9 @@
     "generate": "prisma generate --schema prisma/schema.prisma",
     "seed": "node prisma/seed.mjs"
   },
+  "prisma": {
+    "seed": "node prisma/seed.mjs"
+  },
   "dependencies": {
     "@azure/storage-blob": "^12.33.0",
     "@fitcrew/application": "workspace:*",

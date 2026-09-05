@@ -3,7 +3,7 @@
 export const DB_PACKAGE_NAME = '@fitcrew/db';
 
 export { authPrisma } from './auth-prisma.js';
-export { accessGateForPrincipal, canUserAccess, resolvePrincipal } from './access-gate.js';
+export { accessGateForPrincipal, canUserAccess, getPrincipalForUser, resolvePrincipal } from './access-gate.js';
 export {
   cleanInviteError,
   consumeInvite,
@@ -25,12 +25,13 @@ export {
   NetworkManagementError,
 } from './network-management.js';
 export type { CoachRosterEntry, CoachTermsInput, OrganizationInput } from './network-management.js';
-export { cleanClientLifecycleError, enrollClientForUser, recordBaselineForUser, ClientLifecycleError } from './client-lifecycle.js';
-export type { BaselineInput, ClientListEntry, EnrollmentInput } from './client-lifecycle.js';
+export { cleanClientLifecycleError, enrollClientForUser, recordBaselineForUser, recordEvaluationForUser, listEvaluationsForUser, recordSatisfactionForUser, getSatisfactionMetricsForUser, ClientLifecycleError } from './client-lifecycle.js';
+export type { BaselineInput, EvaluationInput, SatisfactionInput, ClientListEntry, EnrollmentInput } from './client-lifecycle.js';
 export { listClientsForUser } from './client-lifecycle.js';
 export {
   cleanTrainingOperationsError,
   computeEvaluationDueEvents,
+  acknowledgeEvaluationReminder,
   listTrainingDashboardForUser,
   logTrainingSessionForUser,
   markPendingEvaluationRemindersSent,

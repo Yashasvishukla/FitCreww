@@ -10,7 +10,7 @@ export {
   scopeQuery,
 } from './identity-access/index.js';
 export { ConsoleEmailAdapter } from './notifications/index.js';
-export type { EmailAdapter, InviteEmail } from './notifications/index.js';
+export type { EmailAdapter, EvaluationReminderEmail, InviteEmail } from './notifications/index.js';
 export type {
   AccessAction,
   AccessAudit,

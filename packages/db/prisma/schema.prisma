@@ -37,6 +37,7 @@ model Tenant {
   trainingSessions    TrainingSession[]
   evaluationSchedules EvaluationSchedule[]
   evaluationDueEvents EvaluationDueEvent[]
+  satisfactionRecords SatisfactionRecord[]
   auditLogs           AuditLog[]
   invites             Invite[]
 
@@ -150,6 +151,7 @@ model Party {
   evaluations           Evaluation[]            @relation("EvaluationBy")
   createdWorkoutPlans   WorkoutPlan[]           @relation("WorkoutPlanCreatedBy")
   trainingSessions      TrainingSession[]       @relation("TrainingSessionCoach")
+  satisfactionRecords   SatisfactionRecord[]
 
   @@unique([tenantId, userId])
   @@index([tenantId, kind, status])
@@ -249,6 +251,7 @@ model Client {
   trainingSessions       TrainingSession[]
   evaluationSchedule     EvaluationSchedule?
   evaluationDueEvents    EvaluationDueEvent[]
+  satisfactionRecords    SatisfactionRecord[]
 
   @@unique([tenantId, partyId])
   @@index([tenantId, organizationId, status])
@@ -359,6 +362,25 @@ model EvaluationPhoto {
 
   @@unique([evaluationId, mediaAssetId])
   @@map("evaluation_photo")
+  @@schema("public")
+}
+
+model SatisfactionRecord {
+  id                String           @id @default(uuid()) @db.Uuid
+  tenantId          String           @map("tenant_id") @db.Uuid
+  clientId          String           @map("client_id") @db.Uuid
+  capturedByPartyId String           @map("captured_by_party_id") @db.Uuid
+  mode              SatisfactionMode
+  score             Int
+  comment           String?
+  capturedAt        DateTime         @default(now()) @map("captured_at")
+
+  tenant     Tenant @relation(fields: [tenantId], references: [id])
+  client     Client @relation(fields: [clientId], references: [id])
+  capturedBy Party  @relation(fields: [capturedByPartyId], references: [id])
+
+  @@index([tenantId, clientId, capturedAt])
+  @@map("satisfaction_record")
   @@schema("public")
 }
 
@@ -633,6 +655,7 @@ enum Role {
 enum ScopeType {
   tenant
   organization
+  self
 
   @@schema("public")
 }

@@ -1,0 +1,11 @@
+import { listEvaluationsForUser, listTrainingDashboardForUser, prisma } from '@fitcrew/db';
+import { signOutFromDashboard } from './dashboard/actions';
+
+export async function ClientHome({ tenantId, userId, clientId, name }: { tenantId: string; userId: string; clientId: string; name: string }) {
+  const [dashboard, evaluations] = await Promise.all([
+    listTrainingDashboardForUser(prisma, tenantId, userId, clientId),
+    listEvaluationsForUser(prisma, tenantId, userId, clientId),
+  ]);
+  const plan = dashboard.currentPlan;
+  return <main className="dashboard-page"><header className="dashboard-header"><div><p className="eyebrow">FitCrew client portal</p><h1>Welcome, {name}</h1><p className="muted">Your plan, sessions, and progress in one place.</p></div><form action={signOutFromDashboard}><button className="secondary-button" type="submit">Sign out</button></form></header><section className="surface"><p className="eyebrow">Current plan</p><h2>{plan ? `Workout plan v${plan.version}` : 'No plan assigned yet'}</h2>{plan ? <div className="data-list">{plan.days.map((day) => <article className="data-row" key={day.dayNumber}><div><h3>Day {day.dayNumber}</h3><p className="muted">{JSON.stringify(day.exercises)}</p></div></article>)}</div> : <p className="muted">Your coach will publish a workout plan here.</p>}</section><section className="surface"><p className="eyebrow">Recent sessions</p><div className="data-list">{dashboard.sessions.length ? dashboard.sessions.map((session) => <article className="data-row" key={session.id}><div><h3>{session.sessionDate} · {session.exerciseCount} exercises</h3><p className="muted">{session.notes ?? 'No notes'}</p></div></article>) : <p className="muted">No sessions logged yet.</p>}</div></section><section className="surface"><p className="eyebrow">Progress</p><div className="data-list">{evaluations.length ? evaluations.map((evaluation) => <article className="data-row" key={evaluation.id}><div><h3>{evaluation.type} · {new Date(evaluation.evaluatedAt).toLocaleDateString()}</h3><p className="muted">Measurements: {JSON.stringify(evaluation.measurements)}</p><p className="muted">Changes: {JSON.stringify(evaluation.deltas)}</p></div></article>) : <p className="muted">Your first evaluation will appear here.</p>}</div></section></main>;
+}

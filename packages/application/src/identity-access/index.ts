@@ -152,6 +152,11 @@ export function scopeQuery(principal: Principal, modelName: string, now = new Da
 
   const coach = assignments.some((assignment) => assignment.role === 'Coach');
 
+  if (assignments.some((assignment) => assignment.role === 'Client' && assignment.scopeType === 'self')) {
+    if (modelName === 'Client') return { tenantId: principal.tenantId, partyId: principal.partyId };
+    return { id: { in: [] } };
+  }
+
   const organizationIds = assignments
     .filter((assignment) => assignment.role === 'OrgAdmin' && assignment.scopeType === 'organization')
     .map((assignment) => assignment.scopeId)

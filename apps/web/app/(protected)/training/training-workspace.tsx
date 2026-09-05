@@ -9,13 +9,16 @@ type SessionRow = TrainingDashboard['sessions'][number];
 
 export function TrainingWorkspace({ tenantId, dashboard }: Props) {
   const [clientId, setClientId] = useState(dashboard.clients[0]?.clientId ?? '');
+  const [workspace, setWorkspace] = useState<TrainingDashboard>(dashboard);
   const [sessions, setSessions] = useState<readonly SessionRow[]>(dashboard.sessions);
   const [status, setStatus] = useState('');
-  const activeClient = dashboard.clients.find((client) => client.clientId === clientId);
-  const currentPlanDays = dashboard.currentPlan?.days ?? [];
-  const exerciseNames = useMemo(() => dashboard.exercises.map((exercise) => exercise.name), [dashboard.exercises]);
+  const activeClient = workspace.clients.find((client) => client.clientId === clientId);
+  const currentPlanDays = workspace.currentPlan?.days ?? [];
+  const exerciseNames = useMemo(() => workspace.exercises.map((exercise) => exercise.name), [workspace.exercises]);
   const latestSession = sessions[0];
   const planCompletion = currentPlanDays.filter((day) => day.exercises.length > 0).length;
+
+  async function switchClient(nextClientId: string) { setClientId(nextClientId); const response = await fetch(`/api/training/dashboard?tenantId=${tenantId}&clientId=${nextClientId}`); if (response.ok) { const next = await response.json() as TrainingDashboard; setWorkspace(next); setSessions(next.sessions); } }
 
   async function logSession(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -85,15 +88,15 @@ export function TrainingWorkspace({ tenantId, dashboard }: Props) {
           <p className="eyebrow">Active client</p>
           <label className="client-switcher">
             <span className="sr-only">Client</span>
-            <select value={clientId} onChange={(event) => setClientId(event.target.value)} required>
-              {dashboard.clients.map((client) => <option key={client.clientId} value={client.clientId}>{client.name}</option>)}
+            <select value={clientId} onChange={(event) => void switchClient(event.target.value)} required>
+              {workspace.clients.map((client) => <option key={client.clientId} value={client.clientId}>{client.name}</option>)}
             </select>
           </label>
         </div>
         <div className="training-stats" aria-label="Training status">
           <Metric label="Last session" value={latestSession ? formatShortDate(latestSession.sessionDate) : 'None'} />
           <Metric label="Plan days" value={`${planCompletion}/7`} />
-          <Metric label="Due" value={String(dashboard.dueEvaluations.length)} />
+          <Metric label="Due" value={String(workspace.dueEvaluations.length)} />
         </div>
       </section>
 
@@ -152,7 +155,7 @@ export function TrainingWorkspace({ tenantId, dashboard }: Props) {
                 <p className="eyebrow">Evaluations</p>
                 <h2>Due list</h2>
               </div>
-              <span className="count-label">{dashboard.dueEvaluations.length}</span>
+              <span className="count-label">{workspace.dueEvaluations.length}</span>
             </div>
             <form className="inline-form polished-form" onSubmit={saveSchedule}>
               <div className="form-grid compact">
@@ -168,7 +171,7 @@ export function TrainingWorkspace({ tenantId, dashboard }: Props) {
               <button className="secondary-button" type="submit" disabled={!clientId}>Set schedule</button>
             </form>
             <div className="due-stack">
-              {dashboard.dueEvaluations.length === 0 ? <p className="empty-state">No evaluations due.</p> : dashboard.dueEvaluations.map((due) => (
+              {workspace.dueEvaluations.length === 0 ? <p className="empty-state">No evaluations due.</p> : workspace.dueEvaluations.map((due) => (
                 <article className="due-row" key={due.id}>
                   <div>
                     <h3>{due.clientName}</h3>
@@ -185,14 +188,14 @@ export function TrainingWorkspace({ tenantId, dashboard }: Props) {
           <div className="section-heading">
             <div>
               <p className="eyebrow">Workout plan</p>
-              <h2>{dashboard.currentPlan ? `Current plan v${dashboard.currentPlan.version}` : 'New 7-day plan'}</h2>
+              <h2>{workspace.currentPlan ? `Current plan v${workspace.currentPlan.version}` : 'New 7-day plan'}</h2>
             </div>
             <span className="count-label">Versioned history</span>
           </div>
           <form className="plan-form" onSubmit={savePlan}>
             {Array.from({ length: 7 }, (_, index) => {
               const dayNumber = index + 1;
-              const existing = dashboard.currentPlan?.days.find((day) => day.dayNumber === dayNumber);
+              const existing = workspace.currentPlan?.days.find((day) => day.dayNumber === dayNumber);
               return (
                 <fieldset key={dayNumber}>
                   <legend>Day {dayNumber}</legend>
@@ -203,6 +206,7 @@ export function TrainingWorkspace({ tenantId, dashboard }: Props) {
             })}
             <button className="primary-button" type="submit" disabled={!clientId}>Save new version</button>
           </form>
+          {workspace.planHistory.length > 1 ? <div className="plan-history" aria-label="Plan history"><p className="eyebrow">History</p>{workspace.planHistory.map((plan) => <span key={plan.id}>v{plan.version}</span>)}</div> : null}
         </section>
 
         <section className="surface catalog-panel">
@@ -211,7 +215,7 @@ export function TrainingWorkspace({ tenantId, dashboard }: Props) {
               <p className="eyebrow">Catalog</p>
               <h2>Exercise library</h2>
             </div>
-            <span className="count-label">{dashboard.exercises.length} items</span>
+            <span className="count-label">{workspace.exercises.length} items</span>
           </div>
           <form className="catalog-form" onSubmit={addExercise}>
             <Field label="Exercise"><input name="name" placeholder="Cable row" required /></Field>
@@ -219,7 +223,7 @@ export function TrainingWorkspace({ tenantId, dashboard }: Props) {
             <button className="secondary-button" type="submit">Add exercise</button>
           </form>
           <div className="exercise-pills" aria-label="Exercise catalog">
-            {dashboard.exercises.slice(0, 18).map((exercise) => (
+            {workspace.exercises.slice(0, 18).map((exercise) => (
               <span key={exercise.id}>{exercise.name}</span>
             ))}
           </div>

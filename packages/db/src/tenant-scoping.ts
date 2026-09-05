@@ -1,6 +1,6 @@
 import { Prisma } from '@prisma/client';
 
-const DEFAULT_TENANT_SCOPED_MODELS = ['TenantConfig', 'Party', 'RoleAssignment', 'Engagement', 'Organization', 'Client', 'ClientCoachAssignment', 'ConsentRecord', 'MediaAsset', 'WorkflowDefinition', 'WorkflowStage', 'Evaluation', 'EvaluationPhoto', 'Subscription', 'ExerciseCatalog', 'WorkoutPlan', 'PlanDay', 'TrainingSession', 'EvaluationSchedule', 'EvaluationDueEvent', 'AuditLog', 'Invite'] as const;
+const DEFAULT_TENANT_SCOPED_MODELS = ['TenantConfig', 'Party', 'RoleAssignment', 'Engagement', 'Organization', 'Client', 'ClientCoachAssignment', 'ConsentRecord', 'MediaAsset', 'WorkflowDefinition', 'WorkflowStage', 'Evaluation', 'EvaluationPhoto', 'SatisfactionRecord', 'Subscription', 'ExerciseCatalog', 'WorkoutPlan', 'PlanDay', 'TrainingSession', 'EvaluationSchedule', 'EvaluationDueEvent', 'AuditLog', 'Invite'] as const;
 
 type TenantScopedModel = (typeof DEFAULT_TENANT_SCOPED_MODELS)[number];
 

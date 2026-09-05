@@ -12,14 +12,26 @@ export type InviteEmail = {
   readonly expiresAt: Date;
 };
 
+export type EvaluationReminderEmail = {
+  readonly recipient: string;
+  readonly clientName: string;
+  readonly dueDate: string;
+};
+
 export interface EmailAdapter {
   sendInvite(email: InviteEmail): Promise<void>;
+  sendEvaluationReminder(email: EvaluationReminderEmail): Promise<void>;
 }
 
 export class ConsoleEmailAdapter implements EmailAdapter {
   readonly sent: InviteEmail[] = [];
+  readonly reminders: EvaluationReminderEmail[] = [];
 
   async sendInvite(email: InviteEmail): Promise<void> {
     this.sent.push(email);
+  }
+
+  async sendEvaluationReminder(email: EvaluationReminderEmail): Promise<void> {
+    this.reminders.push(email);
   }
 }

@@ -16,6 +16,7 @@ export type TrainingDashboard = {
   clients: readonly { clientId: string; name: string; coachPartyId: string | null; organizationId: string | null }[];
   exercises: readonly ExerciseCatalogEntry[];
   currentPlan: null | { id: string; version: number; days: readonly PlanDayInput[] };
+  planHistory: readonly { id: string; version: number; createdAt: string }[];
   sessions: readonly { id: string; clientName: string; sessionDate: string; startTime: string; endTime: string | null; exerciseCount: number; notes: string | null }[];
   dueEvaluations: readonly { id: string; clientId: string; clientName: string; nextDueDate: string; cadence: Cadence }[];
 };
@@ -56,6 +57,7 @@ export type ReminderResult = {
   tenantId: string;
   clientName: string;
   dueDate: string;
+  recipient: string | null;
 };
 
 export class TrainingOperationsError extends Error {
@@ -74,9 +76,10 @@ export async function listTrainingDashboardForUser(client: PrismaClient, tenantI
     const clients = await tx.client.findMany({ where: clientWhere, include: { party: true, currentCoachAssignment: true }, orderBy: { party: { displayName: 'asc' } } });
     const visibleClientIds = clients.map((entry) => entry.id);
     const activeClientId = selectedClientId && visibleClientIds.includes(selectedClientId) ? selectedClientId : visibleClientIds[0];
-    const [exercises, currentPlan, sessions, dueEvaluations] = await Promise.all([
+    const [exercises, currentPlan, planHistory, sessions, dueEvaluations] = await Promise.all([
       tx.exerciseCatalog.findMany({ where: { OR: [{ tenantId }, { tenantId: null }] }, orderBy: [{ muscleGroup: 'asc' }, { name: 'asc' }] }),
       activeClientId ? tx.workoutPlan.findFirst({ where: { clientId: activeClientId, isCurrent: true }, include: { days: { orderBy: { dayNumber: 'asc' } } } }) : null,
+      activeClientId ? tx.workoutPlan.findMany({ where: { clientId: activeClientId }, select: { id: true, version: true, createdAt: true }, orderBy: { version: 'desc' } }) : [],
       tx.trainingSession.findMany({ where: { clientId: { in: visibleClientIds } }, include: { client: { include: { party: true } } }, orderBy: [{ sessionDate: 'desc' }, { createdAt: 'desc' }], take: 12 }),
       tx.evaluationDueEvent.findMany({ where: { clientId: { in: visibleClientIds }, status: { in: ['pending', 'reminded'] } }, include: { client: { include: { party: true } }, schedule: true }, orderBy: { nextDueDate: 'asc' }, take: 20 }),
     ]);
@@ -84,6 +87,7 @@ export async function listTrainingDashboardForUser(client: PrismaClient, tenantI
       clients: clients.map((row) => ({ clientId: row.id, name: row.party.displayName, coachPartyId: row.currentCoachAssignment?.coachPartyId ?? null, organizationId: row.organizationId })),
       exercises: exercises.map((row) => ({ id: row.id, name: row.name, muscleGroup: row.muscleGroup, tenantId: row.tenantId })),
       currentPlan: currentPlan ? { id: currentPlan.id, version: currentPlan.version, days: currentPlan.days.map((day) => ({ dayNumber: day.dayNumber, exercises: normalizeExerciseList(day.exercises), notes: day.notes ?? undefined })) } : null,
+      planHistory: planHistory.map((plan) => ({ id: plan.id, version: plan.version, createdAt: plan.createdAt.toISOString() })),
       sessions: sessions.map((row) => ({ id: row.id, clientName: row.client.party.displayName, sessionDate: toPlainDate(row.sessionDate), startTime: row.startTime, endTime: row.endTime, exerciseCount: normalizeExerciseList(row.exercisesPerformed).length, notes: row.notes })),
       dueEvaluations: dueEvaluations.map((row) => ({ id: row.id, clientId: row.clientId, clientName: row.client.party.displayName, nextDueDate: toPlainDate(row.nextDueDate), cadence: row.schedule.cadence })),
     };
@@ -129,6 +133,7 @@ export async function logTrainingSessionForUser(client: PrismaClient, tenantId: 
     if (!clientRecord.currentCoachAssignment) throw new TrainingOperationsError('Client has no active coach assignment.');
     const exercises = normalizeExercises(input.exercises);
     if (exercises.length === 0) throw new TrainingOperationsError('At least one exercise is required.');
+    if (input.endTime && input.endTime < input.startTime) throw new TrainingOperationsError('End time cannot be before start time.');
     const session = await tx.trainingSession.create({
       data: {
         tenantId,
@@ -164,12 +169,16 @@ export async function computeEvaluationDueEvents(client: PrismaClient, tenantId:
     const schedules = await tx.evaluationSchedule.findMany({ where: { isActive: true, nextDueDate: { lte: asOfDay } } });
     let createdEvents = 0;
     for (const schedule of schedules) {
+      const existing = await tx.evaluationDueEvent.findUnique({
+        where: { tenantId_evaluationScheduleId_nextDueDate: { tenantId, evaluationScheduleId: schedule.id, nextDueDate: schedule.nextDueDate } },
+        select: { id: true },
+      });
       const result = await tx.evaluationDueEvent.upsert({
         where: { tenantId_evaluationScheduleId_nextDueDate: { tenantId, evaluationScheduleId: schedule.id, nextDueDate: schedule.nextDueDate } },
         update: {},
         create: { tenantId, evaluationScheduleId: schedule.id, clientId: schedule.clientId, nextDueDate: schedule.nextDueDate, status: 'pending' },
       });
-      if (result.createdAt.getTime() >= asOf.getTime() - 60_000) createdEvents += 1;
+      if (!existing && result.id) createdEvents += 1;
       await tx.evaluationSchedule.update({ where: { id: schedule.id }, data: { nextDueDate: advanceDueDate(schedule.nextDueDate, schedule.cadence) } });
     }
     return { createdEvents, advancedSchedules: schedules.length };
@@ -178,10 +187,13 @@ export async function computeEvaluationDueEvents(client: PrismaClient, tenantId:
 
 export async function markPendingEvaluationRemindersSent(client: PrismaClient, tenantId: string, asOf = new Date()): Promise<readonly ReminderResult[]> {
   return withTenant(client as never, tenantId, async (tx: Tx) => {
-    const dueRows = await tx.evaluationDueEvent.findMany({ where: { status: 'pending', nextDueDate: { lte: utcDateOnly(asOf) } }, include: { client: { include: { party: true } } }, orderBy: { nextDueDate: 'asc' }, take: 50 });
-    for (const row of dueRows) await tx.evaluationDueEvent.update({ where: { id: row.id }, data: { status: 'reminded', reminderSentAt: asOf } });
-    return dueRows.map((row) => ({ reminderId: row.id, tenantId, clientName: row.client.party.displayName, dueDate: toPlainDate(row.nextDueDate) }));
+    const dueRows = await tx.evaluationDueEvent.findMany({ where: { status: 'pending', nextDueDate: { lte: utcDateOnly(asOf) } }, include: { client: { include: { party: { include: { user: { select: { email: true } } } } } } }, orderBy: { nextDueDate: 'asc' }, take: 50 });
+    return dueRows.map((row) => ({ reminderId: row.id, tenantId, clientName: row.client.party.displayName, dueDate: toPlainDate(row.nextDueDate), recipient: row.client.party.user?.email ?? null }));
   });
+}
+
+export async function acknowledgeEvaluationReminder(client: PrismaClient, tenantId: string, reminderId: string, sentAt = new Date()): Promise<void> {
+  await withTenant(client as never, tenantId, async (tx: Tx) => { await tx.evaluationDueEvent.updateMany({ where: { id: reminderId, tenantId, status: 'pending' }, data: { status: 'reminded', reminderSentAt: sentAt } }); });
 }
 
 async function requirePrincipal(tx: Tx, tenantId: string, userId: string) {
@@ -225,11 +237,13 @@ function requiredText(value: string, label: string, maxLength: number): string {
 
 function parsePlainDate(value: string, label: string): Date {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new TrainingOperationsError(`${label} must be YYYY-MM-DD.`);
-  return new Date(`${value}T00:00:00.000Z`);
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value) throw new TrainingOperationsError(`${label} must be a real calendar date.`);
+  return parsed;
 }
 
 function parseClockTime(value: string, label: string): string {
-  if (!/^[0-2][0-9]:[0-5][0-9]$/.test(value)) throw new TrainingOperationsError(`${label} must be HH:mm.`);
+  if (!/^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/.test(value)) throw new TrainingOperationsError(`${label} must be HH:mm.`);
   return value;
 }
 
@@ -245,7 +259,13 @@ function advanceDueDate(date: Date, cadence: Cadence): Date {
   const next = new Date(date);
   if (cadence === 'weekly') next.setUTCDate(next.getUTCDate() + 7);
   if (cadence === 'biweekly') next.setUTCDate(next.getUTCDate() + 14);
-  if (cadence === 'monthly') next.setUTCMonth(next.getUTCMonth() + 1);
+  if (cadence === 'monthly') {
+    const day = next.getUTCDate();
+    next.setUTCDate(1);
+    next.setUTCMonth(next.getUTCMonth() + 1);
+    const lastDay = new Date(Date.UTC(next.getUTCFullYear(), next.getUTCMonth() + 1, 0)).getUTCDate();
+    next.setUTCDate(Math.min(day, lastDay));
+  }
   return next;
 }
 
