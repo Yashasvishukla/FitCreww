@@ -21,6 +21,8 @@ export type AccessResourceType =
   | 'payslip'
   | 'settlement'
   | 'ledger'
+  | 'payment'
+  | 'payout_handle'
   | 'config'
   | 'invite';
 
@@ -74,6 +76,8 @@ const COACH_RESOURCES = new Set<AccessResourceType>([
   'photo',
   'accrual',
   'payslip',
+  'payment',
+  'payout_handle',
 ]);
 
 export function createAccessGate(now = new Date(), auditWriter?: AccessAuditWriter): AccessGate {

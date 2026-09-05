@@ -5,11 +5,13 @@ import { EvaluationForm } from './evaluation-form';
 import { ProgressPanel } from './progress-panel';
 import { SatisfactionForm } from './satisfaction-form';
 import { NetworkNav } from '../../network-nav';
+import { DEMO_TENANT_ID, requireFeature } from '@/lib/authorization';
 
 export default async function ClientIntakePage({ params, searchParams }: { params: { id: string }; searchParams: { tenantId?: string } }) {
   const session = await auth();
   if (!session?.user?.id) return null;
-  const tenantId = searchParams.tenantId ?? '11111111-1111-4111-8111-111111111111';
+  const tenantId = searchParams.tenantId ?? DEMO_TENANT_ID;
+  await requireFeature(session.user.id, tenantId, ['OwnerAdmin', 'Coach', 'OrgAdmin']);
   let client = null;
   try {
     client = (await listClientsForUser(prisma, tenantId, session.user.id)).find((entry) => entry.clientId === params.id) ?? null;
