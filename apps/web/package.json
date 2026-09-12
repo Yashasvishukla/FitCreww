@@ -17,6 +17,7 @@
     "@fitcrew/domain": "workspace:*",
     "@fitcrew/ui": "workspace:*",
     "@node-rs/argon2": "2.2.0",
+    "@prisma/nextjs-monorepo-workaround-plugin": "5.22.0",
     "next": "^14.2.15",
     "next-auth": "5.0.0-beta.32",
     "react": "^18.3.1",

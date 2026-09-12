@@ -3,6 +3,9 @@
 generator client {
   provider        = "prisma-client-js"
   previewFeatures = ["multiSchema"]
+  // Vercel serverless functions run on Linux/OpenSSL 3, while local
+  // development commonly runs on macOS. Generate both query engines.
+  binaryTargets   = ["native", "rhel-openssl-3.0.x"]
 }
 
 datasource db {
