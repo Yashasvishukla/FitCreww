@@ -5,12 +5,16 @@ import { OwnerDashboard } from './owner-dashboard';
 import { NetworkNav } from '../network-nav';
 import { cleanOwnerDashboardError, getOwnerDashboard, getPrincipalForUser, prisma } from '@fitcrew/db';
 import { redirect } from 'next/navigation';
+import { defaultWorkspacePath, isTenantOwner } from '@/lib/authorization';
 
 export default async function DashboardPage({ searchParams }: { searchParams: { tenantId?: string; earningsFrom?: string; earningsTo?: string } }) {
   const session = await auth();
   const tenantId = searchParams.tenantId ?? '11111111-1111-4111-8111-111111111111';
   const principal = session?.user?.id ? await getPrincipalForUser(prisma, tenantId, session.user.id) : null;
-  if (principal?.assignments.some((assignment) => assignment.role === 'Client')) redirect(`/clients?tenantId=${tenantId}`);
+  if (!isTenantOwner(principal)) {
+    const destination = defaultWorkspacePath(principal, tenantId);
+    if (destination) redirect(destination);
+  }
 
   return (
     <main className="dashboard-page">
@@ -28,7 +32,7 @@ export default async function DashboardPage({ searchParams }: { searchParams: { 
           </form>
         </div>
       </header>
-      {session?.user?.id ? <OwnerContent tenantId={tenantId} userId={session.user.id} earningsRange={parseEarningsRange(searchParams.earningsFrom, searchParams.earningsTo)} /> : <p className="form-error">Your session has expired. Please sign in again.</p>}
+      {session?.user?.id && isTenantOwner(principal) ? <OwnerContent tenantId={tenantId} userId={session.user.id} earningsRange={parseEarningsRange(searchParams.earningsFrom, searchParams.earningsTo)} /> : <p className="form-error" role="alert">Your account does not have an active role in this workspace.</p>}
     </main>
   );
 }

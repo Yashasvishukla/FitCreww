@@ -1,11 +1,18 @@
 import Link from 'next/link';
 import { auth } from '@/auth';
-import { cleanOwnerDashboardError, getOwnerDashboard, prisma } from '@fitcrew/db';
-import { DEMO_TENANT_ID } from '@/lib/authorization';
+import { cleanOwnerDashboardError, getOwnerDashboard, getPrincipalForUser, prisma } from '@fitcrew/db';
+import { DEMO_TENANT_ID, defaultWorkspacePath, isTenantOwner } from '@/lib/authorization';
 import { NetworkNav } from '../../network-nav';
+import { redirect } from 'next/navigation';
 
 export default async function ExceptionsPage({ searchParams }: { searchParams: { tenantId?: string } }) {
   const session = await auth(); if (!session?.user?.id) return null; const tenantId = searchParams.tenantId ?? DEMO_TENANT_ID; const query = `?tenantId=${encodeURIComponent(tenantId)}`;
+  const principal = await getPrincipalForUser(prisma, tenantId, session.user.id);
+  if (!isTenantOwner(principal)) {
+    const destination = defaultWorkspacePath(principal, tenantId);
+    if (destination) redirect(destination);
+    return <main className="dashboard-page"><NetworkNav tenantId={tenantId} /><section className="surface"><p className="form-error" role="alert">Your account does not have an active role in this workspace.</p></section></main>;
+  }
   try { const data = await getOwnerDashboard(prisma, tenantId, session.user.id); const client = (id: string) => `/clients/${id}${query}`; const earnings = `/earnings${query}`; return <main className="dashboard-page"><NetworkNav tenantId={tenantId} /><header className="dashboard-header"><div><p className="eyebrow">Owner dashboard / exceptions</p><h1>Needs attention</h1><p className="muted">Resolve issues affecting client experience, delivery, or cash flow.</p></div><Link className="secondary-button" href={`/dashboard${query}`}>Back to dashboard</Link></header><div className="exception-sections"><ExceptionSection title="Lapsed subscriptions" description="Renew or review clients whose active subscription has ended." empty="No lapsed subscriptions." rows={data.exceptions.lapsedSubscriptions.map((row) => <article className="data-row" key={row.clientId}><div><h3>{row.clientName}</h3><p className="muted">Subscription ended {row.endDate}</p></div><Link className="secondary-button" href={client(row.clientId)}>Open client</Link></article>)} /><ExceptionSection title="Overdue evaluations" description="Open the client record and record the next evaluation." empty="No overdue evaluations." rows={data.exceptions.overdueEvaluations.map((row) => <article className="data-row" key={`${row.clientId}-${row.dueDate}`}><div><h3>{row.clientName}</h3><p className="muted">Due {row.dueDate}</p></div><Link className="secondary-button" href={client(row.clientId)}>Open evaluation</Link></article>)} /><ExceptionSection title="Inactive clients" description="No training session was logged in the last 30 days." empty="No inactive clients." rows={data.exceptions.inactiveClients.map((row) => <article className="data-row" key={row.clientId}><div><h3>{row.clientName}</h3><p className="muted">No recent session activity</p></div><Link className="secondary-button" href={client(row.clientId)}>Review client</Link></article>)} /><ExceptionSection title="Unsettled coach payables" description="Review and settle confirmed earnings owed to coaches." empty="No unsettled coach payables." rows={data.exceptions.unsettledPayables.map((row) => <article className="data-row" key={row.coachPartyId}><div><h3>{row.coachName}</h3><p className="muted">{new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(row.amount)} outstanding</p></div><Link className="secondary-button" href={earnings}>Open earnings</Link></article>)} /></div><p className="dashboard-refresh">Last refreshed {new Date(data.refreshedAt).toLocaleString('en-IN')}</p></main>; } catch (error) { return <main className="dashboard-page"><NetworkNav tenantId={tenantId} /><section className="surface"><p className="form-error" role="alert">{cleanOwnerDashboardError(error)}</p></section></main>; }
 }
 
