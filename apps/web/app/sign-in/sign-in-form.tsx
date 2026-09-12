@@ -15,11 +15,12 @@ function SubmitButton() {
   );
 }
 
-export function SignInForm() {
+export function SignInForm({ redirectTo }: { redirectTo: string }) {
   const [state, formAction] = useFormState(signInWithCredentials, initialState);
 
   return (
     <form action={formAction} className="auth-form">
+      <input name="redirectTo" type="hidden" value={redirectTo} />
       <label>
         <span>Email</span>
         <input autoComplete="email" name="email" type="email" required maxLength={320} />

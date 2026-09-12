@@ -1,6 +1,7 @@
 'use client';
 
 import { FormEvent, useState } from 'react';
+import Link from 'next/link';
 
 export function InviteAcceptForm({ tenantId, token }: { tenantId: string; token: string }) {
   const [error, setError] = useState<string>();
@@ -31,7 +32,10 @@ export function InviteAcceptForm({ tenantId, token }: { tenantId: string; token:
     setComplete(true);
   }
 
-  if (complete) return <p role="status">Account created. You can now sign in.</p>;
+  if (complete) {
+    const signInUrl = `/sign-in?${new URLSearchParams({ callbackUrl: `/dashboard?tenantId=${tenantId}` })}`;
+    return <p role="status">Account created. <Link href={signInUrl}>Sign in to your workspace</Link>.</p>;
+  }
 
   return (
     <form action="#" className="auth-form" onSubmit={submit}>

@@ -2,6 +2,7 @@
 
 import { AuthError } from 'next-auth';
 import { signIn } from '@/auth';
+import { safeRedirectPath } from '@/lib/safe-redirect';
 
 export type SignInState = {
   error?: string;
@@ -15,7 +16,7 @@ export async function signInWithCredentials(
     await signIn('credentials', {
       email: formData.get('email'),
       password: formData.get('password'),
-      redirectTo: '/dashboard',
+      redirectTo: safeRedirectPath(formData.get('redirectTo')?.toString()),
     });
   } catch (error) {
     if (error instanceof AuthError) {

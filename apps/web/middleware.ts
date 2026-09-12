@@ -13,7 +13,7 @@ export function middleware(request: NextRequest) {
   }
 
   const signInUrl = new URL('/sign-in', request.url);
-  signInUrl.searchParams.set('callbackUrl', request.nextUrl.pathname);
+  signInUrl.searchParams.set('callbackUrl', `${request.nextUrl.pathname}${request.nextUrl.search}`);
   const response = NextResponse.redirect(signInUrl);
   response.headers.set('x-correlation-id', correlationId);
   return response;

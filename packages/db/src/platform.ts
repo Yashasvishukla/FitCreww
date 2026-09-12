@@ -59,7 +59,7 @@ export async function provisionTenant(client: PrismaClient, input: ProvisionTena
     ] });
     const invite = await tx.invite.create({ data: { tenantId: tenant.id, tokenHash: hashInviteToken(token), role: 'OwnerAdmin', scopeType: 'tenant', scopeId: null, email: ownerEmail, expiresAt } });
     return { tenantId: tenant.id, tenantName: tenant.name, ownerEmail, ownerInviteId: invite.id, ownerInviteUrl: new URL(`/invite/accept?tenantId=${encodeURIComponent(tenant.id)}&token=${encodeURIComponent(token)}`, baseUrl).toString(), expiresAt };
-  });
+  }, { maxWait: 10_000, timeout: 30_000 });
 }
 
 export async function listPlatformTenants(client: PrismaClient) {
