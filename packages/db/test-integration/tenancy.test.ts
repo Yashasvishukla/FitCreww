@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { accessGateForPrincipal, confirmPaymentForUser, confirmSettlementForUser, consumeInvite, createInviteForPrincipal, createOrganizationAndInviteForUser, createSettlementForUser, deletePayoutHandleForUser, downloadPayslipForUser, enrollClientForUser, getEarningsForUser, listClientsForUser, listOrganizationsForUser, PrismaLedgerRepository, recordBaselineForUser, recordClientPaymentForUser, recordOrganizationPaymentForUser, reverseClientPaymentForUser, savePayoutHandleForUser, updatePayoutHandleForUser, updateRefundClawbackRateForUser, withTenant } from '../src/index.js';
+import { accessGateForPrincipal, assignCoachToOrganizationForUser, confirmPaymentForUser, confirmSettlementForUser, consumeInvite, createInviteForPrincipal, createOrganizationAndInviteForUser, createSettlementForUser, deletePayoutHandleForUser, downloadPayslipForUser, enrollClientForUser, getEarningsForUser, getOrgDashboardForUser, listAssignableCoachesForUser, listClientsForUser, listOrganizationsForUser, PrismaLedgerRepository, recordBaselineForUser, recordClientPaymentForUser, recordOrganizationPaymentForUser, reverseClientPaymentForUser, savePayoutHandleForUser, updatePayoutHandleForUser, updateRefundClawbackRateForUser, withTenant } from '../src/index.js';
 import { ConsoleEmailAdapter, createAccessGate, postLedgerEntry } from '@fitcrew/application';
 import { MemoryPrivateBlobStorage } from '../src/media-pipeline.js';
 
@@ -523,6 +523,38 @@ describe('tenancy core RLS', () => {
     const visible = await listOrganizationsForUser(appPrisma, tenantId, admin.userId);
     expect(visible).toHaveLength(1);
     expect(visible[0]?.organizationId).toBe(result.organizationId);
+  });
+
+  it('shows an organization administrator only coaches assigned to that organization', async () => {
+    const ownerPartyId = randomUUID();
+    const ownerUserId = randomUUID();
+    const coachPartyId = randomUUID();
+    const email = `org-admin-${randomUUID()}@fitcrew.test`;
+    const emailAdapter = new ConsoleEmailAdapter();
+    await withTenant(appPrisma, tenantId, async (tx) => {
+      await tx.user.create({ data: { id: ownerUserId, email: `owner-${randomUUID()}@fitcrew.test`, name: 'Organization Owner' } });
+      await tx.party.createMany({ data: [
+        { id: ownerPartyId, tenantId, userId: ownerUserId, kind: 'person', displayName: 'Organization Owner', status: 'active' },
+        { id: coachPartyId, tenantId, kind: 'person', displayName: 'Tenant Coach', status: 'active' },
+      ] });
+      await tx.roleAssignment.createMany({ data: [
+        { tenantId, partyId: ownerPartyId, role: 'OwnerAdmin', scopeType: 'tenant', validFrom: new Date('2026-01-01') },
+        { tenantId, partyId: coachPartyId, role: 'Coach', scopeType: 'tenant', validFrom: new Date('2026-01-01') },
+      ] });
+    });
+    const organization = await createOrganizationAndInviteForUser(appPrisma, tenantId, ownerUserId, {
+      name: `Scoped Organization ${randomUUID()}`, email, agreementAmount: '25000', agreementStart: '2026-01-01', agreementEnd: null, baseUrl: 'https://fitcrew.test',
+    }, emailAdapter);
+    const token = new URL(emailAdapter.sent[0].inviteUrl).searchParams.get('token');
+    const admin = await consumeInvite(appPrisma, { tenantId, token: token!, password: 'OrganizationAdminPassword!2026', displayName: 'Organization Admin' });
+
+    expect((await getOrgDashboardForUser(appPrisma, tenantId, admin.userId)).coaches).toEqual([]);
+    expect(await listAssignableCoachesForUser(appPrisma, tenantId, admin.userId, organization.organizationId)).toEqual([]);
+    expect((await listOrganizationsForUser(appPrisma, tenantId, admin.userId))[0]?.coaches).toEqual([]);
+
+    await assignCoachToOrganizationForUser(appPrisma, tenantId, ownerUserId, { organizationId: organization.organizationId, coachPartyId });
+    expect((await getOrgDashboardForUser(appPrisma, tenantId, admin.userId)).coaches).toEqual([{ partyId: coachPartyId, name: 'Tenant Coach', members: 0 }]);
+    expect(await listAssignableCoachesForUser(appPrisma, tenantId, admin.userId, organization.organizationId)).toEqual([{ partyId: coachPartyId, displayName: 'Tenant Coach', email: null }]);
   });
 
   it('enrolls a client, creates a subscription, and advances after baseline intake', async () => {

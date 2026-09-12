@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { generatePayslipPdf, ManualConfirmationSource, postLedgerEntry } from '@fitcrew/application';
+import { effectiveAssignments, generatePayslipPdf, ManualConfirmationSource, postLedgerEntry } from '@fitcrew/application';
 import { Prisma, type PrismaClient } from '@prisma/client';
 import { accessGateForPrincipal, resolvePrincipal } from './access-gate.js';
 import { PrismaLedgerRepository } from './ledger.js';
@@ -59,15 +59,15 @@ export async function confirmSettlementForUser(client: PrismaClient, tenantId: s
 export async function getEarningsForUser(client: PrismaClient, tenantId: string, userId: string) {
   return withTenant(client as never, tenantId, async (tx: Tx) => {
     const principal = await resolvePrincipal(tx, tenantId, userId); if (!principal) throw new SettlementError('Forbidden.');
-    const owner = principal.assignments.some((a) => a.role === 'OwnerAdmin'); const coachIds = owner ? undefined : [principal.partyId];
-    if (!owner && !principal.assignments.some((a) => a.role === 'Coach')) throw new SettlementError('Forbidden.');
+    const assignments = effectiveAssignments(principal); const owner = assignments.some((assignment) => assignment.role === 'OwnerAdmin' && assignment.scopeType === 'tenant'); const coachIds = owner ? undefined : [principal.partyId];
+    if (!owner && !assignments.some((assignment) => assignment.role === 'Coach')) throw new SettlementError('Forbidden.');
     const [accruals, settlements] = await Promise.all([
       tx.commissionAccrual.findMany({ where: coachIds ? { coachAssignment: { coachPartyId: { in: coachIds } } } : { tenantId }, include: { coachAssignment: { include: { coachParty: true } }, client: { include: { party: true } } }, orderBy: { createdAt: 'desc' } }),
       tx.settlement.findMany({ where: coachIds ? { coachPartyId: { in: coachIds } } : { tenantId }, include: { coachParty: true, payslip: true }, orderBy: { periodEnd: 'desc' } }),
     ]);
     const payables = new Map<string, { coachPartyId: string; coachName: string; amountMinor: bigint; accrualCount: number }>();
     for (const accrual of accruals.filter((a) => a.settlementId === null)) { const row = payables.get(accrual.coachAssignment.coachPartyId) ?? { coachPartyId: accrual.coachAssignment.coachPartyId, coachName: accrual.coachAssignment.coachParty.displayName, amountMinor: 0n, accrualCount: 0 }; row.amountMinor += decimalToMinor(accrual.coachPayableAmount.toString()); row.accrualCount += 1; payables.set(row.coachPartyId, row); }
-    return { owner, payables: [...payables.values()].map((p) => ({ coachPartyId: p.coachPartyId, coachName: p.coachName, amount: amount(p.amountMinor), accrualCount: p.accrualCount, settleable: p.amountMinor > 0n })), accruals: accruals.map((a) => ({ id: a.id, kind: a.kind, clientName: a.client.party.displayName, coachPartyId: a.coachAssignment.coachPartyId, coachName: a.coachAssignment.coachParty.displayName, gross: a.grossAmount.toString(), commission: a.commissionAmount.toString(), net: a.coachPayableAmount.toString(), settled: a.settlementId !== null, createdAt: a.createdAt.toISOString() })), settlements: settlements.map((s) => ({ id: s.id, coachPartyId: s.coachPartyId, coachName: s.coachParty.displayName, periodStart: isoDate(s.periodStart), periodEnd: isoDate(s.periodEnd), grossRevenue: s.grossRevenue.toString(), commissionAmount: s.commissionAmount.toString(), totalAmount: s.totalAmount.toString(), status: s.status, payslipMediaAssetId: s.payslip?.documentMediaAssetId ?? null })) };
+    return { owner, payables: [...payables.values()].map((p) => ({ coachPartyId: p.coachPartyId, coachName: p.coachName, amount: amount(p.amountMinor), accrualCount: p.accrualCount, settleable: p.amountMinor > 0n })), accruals: accruals.map((a) => ({ id: a.id, settlementId: a.settlementId, kind: a.kind, clientName: a.client.party.displayName, coachPartyId: a.coachAssignment.coachPartyId, coachName: a.coachAssignment.coachParty.displayName, gross: a.grossAmount.toString(), commission: a.commissionAmount.toString(), net: a.coachPayableAmount.toString(), settled: a.settlementId !== null, createdAt: a.createdAt.toISOString() })), settlements: settlements.map((s) => ({ id: s.id, coachPartyId: s.coachPartyId, coachName: s.coachParty.displayName, periodStart: isoDate(s.periodStart), periodEnd: isoDate(s.periodEnd), grossRevenue: s.grossRevenue.toString(), commissionAmount: s.commissionAmount.toString(), totalAmount: s.totalAmount.toString(), status: s.status, payslipMediaAssetId: s.payslip?.documentMediaAssetId ?? null })) };
   });
 }
 
@@ -79,6 +79,6 @@ function decimalToMinor(value: string): bigint { const negative = value.startsWi
 function amount(value: bigint): string { const negative = value < 0n; const unsigned = negative ? -value : value; return `${negative ? '-' : ''}${unsigned / 100n}.${(unsigned % 100n).toString().padStart(2, '0')}`; }
 function sum(values: readonly bigint[]): bigint { return values.reduce((total, value) => total + value, 0n); }
 function isoDate(value: Date): string { return value.toISOString().slice(0, 10); }
-async function requireOwner(tx: Tx, tenantId: string, userId: string) { const principal = await resolvePrincipal(tx, tenantId, userId); if (!principal?.assignments.some((a) => a.role === 'OwnerAdmin')) throw new SettlementError('Forbidden.'); return principal; }
+async function requireOwner(tx: Tx, tenantId: string, userId: string) { const principal = await resolvePrincipal(tx, tenantId, userId); if (!principal || !effectiveAssignments(principal).some((assignment) => assignment.role === 'OwnerAdmin' && assignment.scopeType === 'tenant')) throw new SettlementError('Forbidden.'); return principal; }
 async function audit(tx: Tx, tenantId: string, actorPartyId: string, action: string, resourceType: string, resourceId: string, after: object) { await tx.auditLog.create({ data: { tenantId, actorPartyId, action, resourceType, resourceId, before: Prisma.JsonNull, after } }); }
 export function cleanSettlementError(error: unknown): string { return error instanceof SettlementError || error instanceof Error && error.name === 'LedgerInvariantError' ? error.message : 'Settlement operation failed.'; }

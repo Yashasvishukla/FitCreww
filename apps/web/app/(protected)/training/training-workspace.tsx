@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { TrainingDashboard } from "@fitcrew/db";
 
-type Props = { tenantId: string; dashboard: TrainingDashboard };
+type Props = { tenantId: string; dashboard: TrainingDashboard; canEdit: boolean };
 type SetRow = {
   id: string;
   weight: string;
@@ -34,7 +34,26 @@ const setValidationMessage = (set: SetRow) =>
     ? "Enter a valid weight (0–1000 kg) and reps (0–999) before completing the set."
     : null;
 
-export function TrainingWorkspace({ tenantId, dashboard }: Props) {
+export function TrainingWorkspace({ tenantId, dashboard, canEdit }: Props) {
+  if (!canEdit) return <ReadOnlyTrainingWorkspace sessions={dashboard.sessions} />;
+  return <EditableTrainingWorkspace tenantId={tenantId} dashboard={dashboard} />;
+}
+
+function ReadOnlyTrainingWorkspace({ sessions }: { sessions: readonly SessionRow[] }) {
+  return (
+    <div className="fitnotes-workspace training-read-only">
+      <section className="history-launch">
+        <div>
+          <span>REVIEW TRAINING</span>
+          <p>Browse completed workouts by day and client.</p>
+        </div>
+      </section>
+      <GlobalWorkoutHistory sessions={sessions} />
+    </div>
+  );
+}
+
+function EditableTrainingWorkspace({ tenantId, dashboard }: Omit<Props, "canEdit">) {
   const [clientId, setClientId] = useState(
     dashboard.clients[0]?.clientId ?? "",
   );

@@ -3,19 +3,8 @@ import { getOrgDashboardForUser, listOrganizationsForUser, prisma } from '@fitcr
 import { OrganizationCreateForm } from './create-form';
 import { NetworkNav } from '../network-nav';
 import { DEMO_TENANT_ID, hasRole, requireFeature } from '@/lib/authorization';
-import { OrganizationCoachAssignmentForm } from './coach-assignment-form';
 import { OrgDashboard } from './org-dashboard';
-
-function getInitials(name: string) {
-  const words = name.trim().split(/\s+/).filter(Boolean);
-  return words.slice(0, 2).map((word) => word[0]?.toUpperCase()).join('') || 'FC';
-}
-
-function formatAmount(terms: unknown) {
-  const amount = typeof terms === 'object' && terms !== null && 'amount' in terms ? (terms as { amount?: unknown }).amount : null;
-  const parsed = typeof amount === 'string' || typeof amount === 'number' ? Number(amount) : NaN;
-  return Number.isFinite(parsed) ? new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(parsed) : 'Not set';
-}
+import { OrganizationList } from './organization-list';
 
 export default async function OrganizationsPage({ searchParams }: { searchParams: { tenantId?: string } }) {
   const session = await auth();
@@ -34,7 +23,7 @@ export default async function OrganizationsPage({ searchParams }: { searchParams
       <NetworkNav tenantId={tenantId} />
       <header className="organizations-hero">
         <div>
-          <p className="eyebrow">Network / partners</p>
+          <p className="eyebrow">Organizations</p>
           <h1>Organizations</h1>
           <p>Bring partner teams, their agreements, and the right coaching support into one clear view.</p>
         </div>
@@ -53,18 +42,7 @@ export default async function OrganizationsPage({ searchParams }: { searchParams
           {loadError ? <p className="form-error" role="alert">The organization list could not be loaded.</p> : organizations.length === 0 ? (
             <div className="organization-empty-state"><strong>Your partner network starts here.</strong><p>Create an organization to send its administrator an invitation and set up delivery coverage.</p></div>
           ) : (
-            <div className="organization-list">
-              {organizations.map((organization) => {
-                const assignedCoaches = organization.coaches.filter((coach) => organization.assignedCoachPartyIds.includes(coach.partyId));
-                const availableCoaches = organization.coaches.filter((coach) => !organization.assignedCoachPartyIds.includes(coach.partyId));
-                return <article className="organization-card" key={organization.organizationId}>
-                  <div className="organization-identity"><span className="organization-avatar" aria-hidden="true">{getInitials(organization.name)}</span><div><h3>{organization.name}</h3><p>{organization.status === 'active' ? 'Active workspace' : organization.status}</p></div></div>
-                  <div className="organization-agreement"><span>Agreement</span><strong>{formatAmount(organization.agreementTerms)}</strong></div>
-                  <div className="organization-coaches"><span>Coach team</span><div className="organization-coach-names">{assignedCoaches.length ? assignedCoaches.map((coach) => <span key={coach.partyId}>{getInitials(coach.displayName)}</span>) : <em>Unassigned</em>}</div>{assignedCoaches.length ? <small className="organization-coach-labels">{assignedCoaches.map((coach) => <span key={coach.partyId}>{coach.displayName}</span>)}</small> : <small>Assign a coach to begin</small>}</div>
-                  <OrganizationCoachAssignmentForm tenantId={tenantId} organizationId={organization.organizationId} coaches={availableCoaches} />
-                </article>;
-              })}
-            </div>
+            <OrganizationList tenantId={tenantId} organizations={organizations} />
           )}
         </section>
         <aside className="surface organization-create-panel">

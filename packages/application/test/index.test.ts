@@ -67,6 +67,12 @@ describe('AccessGate permission matrix', () => {
     expect(canAccess(coach, 'read', { type: 'engagement', id: 'edge-1', coachPartyId: coachId })).toBe(false);
   });
 
+  it('allows a coach to collect only for their assigned clients', () => {
+    expect(canAccess(coach, 'create', { type: 'payment', coachPartyId: coachId, clientId: 'client-1' })).toBe(true);
+    expect(canAccess(coach, 'update', { type: 'payment', coachPartyId: coachId, clientId: 'client-1' })).toBe(false);
+    expect(canAccess(coach, 'create', { type: 'payment', coachPartyId: otherCoachId, clientId: 'client-2' })).toBe(false);
+  });
+
   it('unions owner and coach capabilities for one principal', () => {
     const ownerCoach = { ...owner, assignments: [...owner.assignments, ...coach.assignments] };
     expect(canAccess(ownerCoach, 'read', { type: 'ledger' })).toBe(true);
@@ -109,5 +115,30 @@ describe('AccessGate permission matrix', () => {
       tenantId,
       organizationId: { in: ['org-1'] },
     });
+  });
+
+  it('keeps organization administrators to member management and read-only progress', () => {
+    const orgAdmin = {
+      tenantId,
+      partyId: 'org-admin-1',
+      assignments: [{ role: 'OrgAdmin' as const, scopeType: 'organization' as const, scopeId: 'org-1', validFrom: '2026-01-01', validTo: null }],
+    };
+
+    expect(canAccess(orgAdmin, 'create', { type: 'client', organizationId: 'org-1' })).toBe(true);
+    expect(canAccess(orgAdmin, 'update', { type: 'client', organizationId: 'org-1' })).toBe(true);
+    expect(canAccess(orgAdmin, 'read', { type: 'evaluation', organizationId: 'org-1' })).toBe(true);
+    expect(canAccess(orgAdmin, 'update', { type: 'session', organizationId: 'org-1' })).toBe(false);
+    expect(canAccess(orgAdmin, 'update', { type: 'plan', organizationId: 'org-1' })).toBe(false);
+    expect(canAccess(orgAdmin, 'read', { type: 'photo', organizationId: 'org-1' })).toBe(false);
+    expect(canAccess(orgAdmin, 'read', { type: 'client', organizationId: 'org-2' })).toBe(false);
+  });
+
+  it('does not honor an expired owner assignment', () => {
+    const expiredOwner = {
+      ...owner,
+      assignments: [{ ...owner.assignments[0]!, validTo: '2026-01-02' }],
+    };
+
+    expect(canAccess(expiredOwner, 'read', { type: 'ledger' }, new Date('2026-09-04T00:00:00.000Z'))).toBe(false);
   });
 });

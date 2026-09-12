@@ -1,3 +1,4 @@
+import { effectiveAssignments } from '@fitcrew/application';
 import { Money } from '@fitcrew/domain';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { accessGateForPrincipal, resolvePrincipal } from './access-gate.js';
@@ -23,21 +24,27 @@ export async function enrollClientForUser(client: PrismaClient, tenantId: string
     const name = input.name.trim();
     if (!name || name.length > 200 || !Number.isInteger(input.subscriptionDurationMonths) || input.subscriptionDurationMonths <= 0) throw new ClientLifecycleError('Valid client details are required.');
     const price = Money.inr(input.price);
-    const isOwner = principal.assignments.some((a) => a.role === 'OwnerAdmin');
-    const coachScopes = input.organizationId && !isOwner ? [{ scopeType: 'organization' as const, scopeId: input.organizationId }] : input.organizationId ? [{ scopeType: 'tenant' as const }, { scopeType: 'organization' as const, scopeId: input.organizationId }] : [{ scopeType: 'tenant' as const }];
+    const assignments = effectiveAssignments(principal);
+    const isOwner = assignments.some((assignment) => assignment.role === 'OwnerAdmin' && assignment.scopeType === 'tenant');
+    const organizationAdminIds = assignments.filter((assignment) => assignment.role === 'OrgAdmin' && assignment.scopeType === 'organization').map((assignment) => assignment.scopeId).filter((scopeId): scopeId is string => scopeId !== null);
+    const organizationId = !isOwner && organizationAdminIds.length > 0
+      ? input.organizationId ?? (organizationAdminIds.length === 1 ? organizationAdminIds[0] : null)
+      : input.organizationId;
+    if (!isOwner && organizationAdminIds.length > 0 && (!organizationId || !organizationAdminIds.includes(organizationId))) throw new ClientLifecycleError('An organization-scoped client is required.');
+    const coachScopes = organizationId && !isOwner ? [{ scopeType: 'organization' as const, scopeId: organizationId }] : organizationId ? [{ scopeType: 'tenant' as const }, { scopeType: 'organization' as const, scopeId: organizationId }] : [{ scopeType: 'tenant' as const }];
     const coach = await tx.party.findFirst({ where: { id: input.coachPartyId, kind: 'person', status: 'active', roleAssignments: { some: { role: 'Coach', OR: coachScopes } } } });
     if (!coach) throw new ClientLifecycleError('A valid active coach is required.');
-    if (input.organizationId) {
-      const organization = await tx.organization.findFirst({ where: { id: input.organizationId, status: 'active' } });
+    if (organizationId) {
+      const organization = await tx.organization.findFirst({ where: { id: organizationId, tenantId, status: 'active' } });
       if (!organization) throw new ClientLifecycleError('Organization was not found.');
     }
-    const allowed = await gate.can(principal, 'create', { type: 'client', tenantId, coachPartyId: input.coachPartyId, organizationId: input.organizationId ?? undefined });
+    const allowed = await gate.can(principal, 'create', { type: 'client', tenantId, coachPartyId: input.coachPartyId, organizationId: organizationId ?? undefined });
     if (!allowed) throw new ClientLifecycleError('Forbidden.');
     const email = input.email?.trim().toLowerCase() || null;
     if (email && (!input.password || input.password.length < 12)) throw new ClientLifecycleError('Client password must be at least 12 characters.');
     const user = email ? await tx.user.create({ data: { email, name, passwordHash: await hashPassword(input.password!) } }) : null;
     const party = await tx.party.create({ data: { tenantId, kind: 'person', displayName: name, status: 'active', userId: user?.id ?? null } });
-    const clientRecord = await tx.client.create({ data: { tenantId, partyId: party.id, organizationId: input.organizationId, enrolledByPartyId: principal.partyId, customPrice: price.toString(), schedule: input.schedule as Prisma.InputJsonValue, photoConsent: input.photoConsent, photoConsentAt: input.photoConsent ? new Date() : null, workflowState: 'enrollment' } });
+    const clientRecord = await tx.client.create({ data: { tenantId, partyId: party.id, organizationId, enrolledByPartyId: principal.partyId, customPrice: price.toString(), schedule: input.schedule as Prisma.InputJsonValue, photoConsent: input.photoConsent, photoConsentAt: input.photoConsent ? new Date() : null, workflowState: 'enrollment' } });
     const assignment = await tx.clientCoachAssignment.create({ data: { tenantId, clientId: clientRecord.id, coachPartyId: input.coachPartyId, assignedByPartyId: principal.partyId, validFrom: today() } });
     if (user) await tx.roleAssignment.create({ data: { tenantId, partyId: party.id, role: 'Client', scopeType: 'self', scopeId: null, validFrom: today() } });
     await tx.client.updateMany({ where: { id: clientRecord.id }, data: { currentCoachAssignmentId: assignment.id } });
@@ -66,7 +73,7 @@ export async function reassignClientCoachForUser(client: PrismaClient, tenantId:
     const record = await tx.client.findFirst({ where: { id: input.clientId }, include: { currentCoachAssignment: true } });
     if (!record) throw new ClientLifecycleError('Client was not found.');
     if (!(await accessGateForPrincipal(tx, principal).can(principal, 'update', { type: 'client', id: record.id, tenantId, organizationId: record.organizationId ?? undefined }))) throw new ClientLifecycleError('Forbidden.');
-    const isOwner = principal.assignments.some((a) => a.role === 'OwnerAdmin');
+    const isOwner = effectiveAssignments(principal).some((assignment) => assignment.role === 'OwnerAdmin' && assignment.scopeType === 'tenant');
     const coachScopes = record.organizationId && !isOwner ? [{ scopeType: 'organization' as const, scopeId: record.organizationId }] : record.organizationId ? [{ scopeType: 'tenant' as const }, { scopeType: 'organization' as const, scopeId: record.organizationId }] : [{ scopeType: 'tenant' as const }];
     const coach = await tx.party.findFirst({ where: { id: input.coachPartyId, tenantId, kind: 'person', status: 'active', roleAssignments: { some: { role: 'Coach', validTo: null, OR: coachScopes } } } });
     if (!coach) throw new ClientLifecycleError('A valid coach for this organization is required.');
@@ -140,7 +147,7 @@ export async function recordSatisfactionForUser(client: PrismaClient, tenantId: 
 }
 
 export async function getSatisfactionMetricsForUser(client: PrismaClient, tenantId: string, userId: string) {
-  return withTenant(client as never, tenantId, async (tx: Tx) => { const principal = await resolvePrincipal(tx, tenantId, userId); if (!principal || !principal.assignments.some((assignment) => assignment.role === 'OwnerAdmin')) throw new ClientLifecycleError('Forbidden.'); const rows = await tx.satisfactionRecord.findMany({ where: { tenantId }, select: { score: true } }); return { count: rows.length, averageScore: rows.length ? rows.reduce((sum, row) => sum + row.score, 0) / rows.length : null }; });
+  return withTenant(client as never, tenantId, async (tx: Tx) => { const principal = await resolvePrincipal(tx, tenantId, userId); if (!principal || !effectiveAssignments(principal).some((assignment) => assignment.role === 'OwnerAdmin' && assignment.scopeType === 'tenant')) throw new ClientLifecycleError('Forbidden.'); const rows = await tx.satisfactionRecord.findMany({ where: { tenantId }, select: { score: true } }); return { count: rows.length, averageScore: rows.length ? rows.reduce((sum, row) => sum + row.score, 0) / rows.length : null }; });
 }
 
 function validateMeasurements(measurements: Record<string, number>) { if (!Object.keys(measurements).length || Object.values(measurements).some((value) => !Number.isFinite(value) || value < 0)) throw new ClientLifecycleError('Measurements must be non-negative numbers.'); }
@@ -149,7 +156,7 @@ async function requireEvaluationClient(tx: Tx, tenantId: string, userId: string,
   const principal = await resolvePrincipal(tx, tenantId, userId); if (!principal) throw new ClientLifecycleError('Forbidden.');
   const clientRecord = await tx.client.findFirst({ where: { id: clientId }, include: { currentCoachAssignment: true } });
   if (!clientRecord) throw new ClientLifecycleError('Forbidden.');
-  const isClientRead = action === 'read' && principal.assignments.some((assignment) => assignment.role === 'Client');
+  const isClientRead = action === 'read' && effectiveAssignments(principal).some((assignment) => assignment.role === 'Client' && assignment.scopeType === 'self');
   if ((!isClientRead && !clientRecord.currentCoachAssignment) || !(await accessGateForPrincipal(tx, principal).can(principal, action, { type: 'evaluation', tenantId, clientId, ownerPartyId: clientRecord.partyId, coachPartyId: clientRecord.currentCoachAssignment?.coachPartyId, organizationId: clientRecord.organizationId ?? undefined } as never))) throw new ClientLifecycleError('Forbidden.');
   return { principal, clientRecord };
 }

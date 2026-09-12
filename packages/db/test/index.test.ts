@@ -34,7 +34,7 @@ describe('credential primitives', () => {
 
 describe('tenant-scoping query rewrite', () => {
   it('documents the current tenant-scoped Prisma models', () => {
-    expect(TENANT_SCOPED_MODELS).toEqual(['TenantConfig', 'Party', 'RoleAssignment', 'Engagement', 'Organization', 'Client', 'ClientCoachAssignment', 'ConsentRecord', 'MediaAsset', 'WorkflowDefinition', 'WorkflowStage', 'Evaluation', 'EvaluationPhoto', 'SatisfactionRecord', 'Subscription', 'ExerciseCatalog', 'WorkoutPlan', 'PlanDay', 'TrainingSession', 'EvaluationSchedule', 'EvaluationDueEvent', 'AuditLog', 'Invite', 'LedgerAccount', 'LedgerEntry', 'LedgerLine', 'PayoutHandle', 'PaymentRecord', 'ClientEngagementClock', 'CommissionAccrual', 'Settlement', 'Payslip']);
+    expect(TENANT_SCOPED_MODELS).toEqual(['TenantConfig', 'Party', 'RoleAssignment', 'Engagement', 'Organization', 'Client', 'ClientCoachAssignment', 'ConsentRecord', 'MediaAsset', 'WorkflowDefinition', 'WorkflowStage', 'Evaluation', 'EvaluationPhoto', 'SatisfactionRecord', 'Subscription', 'ExerciseCatalog', 'WorkoutPlan', 'PlanDay', 'TrainingSession', 'WorkoutDraft', 'EvaluationSchedule', 'EvaluationDueEvent', 'AuditLog', 'Invite', 'LedgerAccount', 'LedgerEntry', 'LedgerLine', 'PayoutHandle', 'PaymentRecord', 'ClientEngagementClock', 'CommissionAccrual', 'Settlement', 'Payslip']);
   });
 
   it('adds tenantId to read filters', () => {
@@ -73,6 +73,15 @@ describe('tenant-scoping query rewrite', () => {
         args: { where: { id: 'tenant-config-id' } },
       }),
     ).toThrow('must include the current tenantId');
+
+    expect(
+      applyTenantScope({
+        tenantId,
+        model: 'WorkoutDraft',
+        operation: 'findUnique',
+        args: { where: { clientId: 'client-id', tenantId } },
+      }),
+    ).toEqual({ where: { clientId: 'client-id', tenantId } });
   });
 
   it('keeps the unique selector at the root for scoped updates', () => {

@@ -2,6 +2,9 @@ import { cleanDemoReferenceNetworkError, seedDemoReferenceNetwork, type DemoRefe
 import { NextResponse } from 'next/server';
 
 export async function POST(request: Request) {
+  if (process.env.NODE_ENV !== 'development') {
+    return NextResponse.json({ error: 'Not found.' }, { status: 404 });
+  }
   try {
     const input = await readInput(request);
     const result = await seedDemoReferenceNetwork(input);

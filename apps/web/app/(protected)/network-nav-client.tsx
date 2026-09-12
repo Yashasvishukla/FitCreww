@@ -10,12 +10,12 @@ const ownerOnly: readonly AppRole[] = ['OwnerAdmin'];
 const clientFacing: readonly AppRole[] = ['OwnerAdmin', 'Coach', 'OrgAdmin'];
 
 const links: readonly NavLink[] = [
-  { href: '/dashboard', label: 'Overview', roles: ['OwnerAdmin', 'Coach', 'OrgAdmin', 'Client'] },
+  { href: '/dashboard', label: 'Overview', roles: ownerOnly },
   { href: '/coaches', label: 'Coaches', roles: ownerOnly },
   { href: '/organizations', label: 'Organizations', roles: ['OwnerAdmin', 'OrgAdmin'] },
   { href: '/clients', label: 'Clients', roles: clientFacing },
   { href: '/training', label: 'Training', roles: clientFacing },
-  { href: '/money', label: 'Money', roles: ownerOnly },
+  { href: '/money', label: 'Money', roles: ['OwnerAdmin', 'Coach'] },
   { href: '/earnings', label: 'Earnings', roles: ['OwnerAdmin', 'Coach'] },
   { href: '/profile', label: '◉ Account', roles: ['OwnerAdmin', 'Coach', 'OrgAdmin', 'Client'] },
 ];

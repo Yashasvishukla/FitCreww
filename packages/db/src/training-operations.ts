@@ -1,3 +1,4 @@
+import { effectiveAssignments } from '@fitcrew/application';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { accessGateForPrincipal, resolvePrincipal } from './access-gate.js';
 import { withTenant } from './with-tenant.js';
@@ -134,7 +135,9 @@ function mergeExerciseCatalog(exercises: readonly ExerciseCatalogEntry[]): reado
 
 export async function upsertExerciseForUser(client: PrismaClient, tenantId: string, userId: string, input: { name: string; muscleGroup?: string }) {
   return withTenant(client as never, tenantId, async (tx: Tx) => {
-    await requirePrincipal(tx, tenantId, userId);
+    const principal = await requirePrincipal(tx, tenantId, userId);
+    const canManageCatalog = effectiveAssignments(principal).some((assignment) => assignment.role === 'OwnerAdmin' || assignment.role === 'Coach');
+    if (!canManageCatalog) throw new TrainingOperationsError('Forbidden.');
     const name = requiredText(input.name, 'Exercise name', 120);
     const muscleGroup = input.muscleGroup?.trim() || null;
     const existing = await tx.exerciseCatalog.findFirst({
@@ -205,7 +208,7 @@ export async function logTrainingSessionForUser(client: PrismaClient, tenantId: 
 export async function getWorkoutDraftForUser(client: PrismaClient, tenantId: string, userId: string, clientId: string) {
   return withTenant(client as never, tenantId, async (tx: Tx) => {
     await requireVisibleClient(tx, tenantId, userId, clientId, 'session');
-    const draft = await tx.workoutDraft.findUnique({ where: { clientId } });
+    const draft = await tx.workoutDraft.findUnique({ where: { clientId, tenantId } });
     return draft ? { exercises: draft.exercises, activeExerciseId: draft.activeExerciseId, updatedAt: draft.updatedAt.toISOString() } : null;
   });
 }

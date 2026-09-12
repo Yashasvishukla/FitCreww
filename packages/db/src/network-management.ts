@@ -1,6 +1,6 @@
 import { DateRange, LifespanMonths, Money, Percentage } from '@fitcrew/domain';
 import { Prisma, PrismaClient } from '@prisma/client';
-import { type EmailAdapter } from '@fitcrew/application';
+import { effectiveAssignments, type EmailAdapter } from '@fitcrew/application';
 import { createInviteForPrincipal, type InviteResult } from './invites.js';
 import { accessGateForPrincipal, resolvePrincipal } from './access-gate.js';
 import { prisma } from './prisma.js';
@@ -39,10 +39,16 @@ export async function listAssignableCoachesForUser(prismaClient: PrismaClient, t
   return withTenant(prismaClient as never, tenantId, async (tx: TransactionClient) => {
     const principal = await resolvePrincipal(tx, tenantId, userId);
     if (!principal) throw new NetworkManagementError('Forbidden.');
-    const owner = principal.assignments.some((a) => a.role === 'OwnerAdmin');
-    const orgAdmin = organizationId !== null && principal.assignments.some((a) => a.role === 'OrgAdmin' && a.scopeId === organizationId);
+    const assignments = effectiveAssignments(principal);
+    const owner = assignments.some((assignment) => assignment.role === 'OwnerAdmin' && assignment.scopeType === 'tenant');
+    const orgAdmin = organizationId !== null && assignments.some((assignment) => assignment.role === 'OrgAdmin' && assignment.scopeType === 'organization' && assignment.scopeId === organizationId);
     if (!owner && !orgAdmin) throw new NetworkManagementError('Forbidden.');
-    const rows = await tx.party.findMany({ where: { tenantId, kind: 'person', status: 'active', roleAssignments: { some: { role: 'Coach', validTo: null, OR: organizationId ? [{ scopeType: 'tenant' }, { scopeType: 'organization', scopeId: organizationId }] : [{ scopeType: 'tenant' }] } } }, include: { user: { select: { email: true } } }, orderBy: { displayName: 'asc' } });
+    const coachScopes = organizationId && !owner
+      ? [{ scopeType: 'organization' as const, scopeId: organizationId }]
+      : organizationId
+        ? [{ scopeType: 'tenant' as const }, { scopeType: 'organization' as const, scopeId: organizationId }]
+        : [{ scopeType: 'tenant' as const }];
+    const rows = await tx.party.findMany({ where: { tenantId, kind: 'person', status: 'active', roleAssignments: { some: { role: 'Coach', validTo: null, OR: coachScopes } } }, include: { user: { select: { email: true } } }, orderBy: { displayName: 'asc' } });
     return rows.map((row) => ({ partyId: row.id, displayName: row.displayName, email: row.user?.email ?? null }));
   });
 }
@@ -51,7 +57,7 @@ export async function listAssignableCoachesForUser(prismaClient: PrismaClient, t
 export async function assignCoachToOrganizationForUser(prismaClient: PrismaClient, tenantId: string, userId: string, input: OrganizationCoachInput) {
   return withTenant(prismaClient as never, tenantId, async (tx: TransactionClient) => {
     const principal = await resolvePrincipal(tx, tenantId, userId);
-    if (!principal || !principal.assignments.some((a) => a.role === 'OwnerAdmin')) throw new NetworkManagementError('Forbidden.');
+    if (!principal || !effectiveAssignments(principal).some((assignment) => assignment.role === 'OwnerAdmin' && assignment.scopeType === 'tenant')) throw new NetworkManagementError('Forbidden.');
     const [organization, coach] = await Promise.all([
       tx.organization.findFirst({ where: { id: input.organizationId, tenantId, status: 'active' } }),
       tx.party.findFirst({ where: { id: input.coachPartyId, tenantId, kind: 'person', status: 'active', roleAssignments: { some: { role: 'Coach', scopeType: 'tenant', validTo: null } } } }),
@@ -109,12 +115,15 @@ export async function listOrganizationsForUser(prismaClient: PrismaClient, tenan
   return withTenant(prismaClient as never, tenantId, async (tx: TransactionClient) => {
     const principal = await resolvePrincipal(tx, tenantId, userId);
     if (!principal) throw new NetworkManagementError('Forbidden.');
-    const owner = principal.assignments.some((assignment) => assignment.role === 'OwnerAdmin');
+    const owner = effectiveAssignments(principal).some((assignment) => assignment.role === 'OwnerAdmin' && assignment.scopeType === 'tenant');
     const where = owner ? { tenantId } : accessGateForPrincipal(tx, principal).scopeQuery(principal, 'Organization') as never;
     const rows = await tx.organization.findMany({ where, include: { party: true }, orderBy: { party: { displayName: 'asc' } } });
     return Promise.all(rows.map(async (row) => {
+      const coachScopes = owner
+        ? [{ scopeType: 'tenant' as const }, { scopeType: 'organization' as const, scopeId: row.id }]
+        : [{ scopeType: 'organization' as const, scopeId: row.id }];
       const [coaches, assigned] = await Promise.all([
-        tx.party.findMany({ where: { tenantId, kind: 'person', status: 'active', roleAssignments: { some: { role: 'Coach', validTo: null, OR: [{ scopeType: 'tenant' }, { scopeType: 'organization', scopeId: row.id }] } } }, select: { id: true, displayName: true } }),
+        tx.party.findMany({ where: { tenantId, kind: 'person', status: 'active', roleAssignments: { some: { role: 'Coach', validTo: null, OR: coachScopes } } }, select: { id: true, displayName: true } }),
         tx.roleAssignment.findMany({ where: { tenantId, role: 'Coach', scopeType: 'organization', scopeId: row.id, validTo: null }, select: { partyId: true } }),
       ]);
       return { organizationId: row.id, name: row.party.displayName, status: row.status, agreementTerms: row.agreementTerms, coaches: coaches.map((coach) => ({ partyId: coach.id, displayName: coach.displayName })), assignedCoachPartyIds: assigned.map((assignment) => assignment.partyId) };

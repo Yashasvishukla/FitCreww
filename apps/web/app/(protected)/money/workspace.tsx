@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 
 type RazorpayCheckoutResponse = {
@@ -17,6 +17,7 @@ type RazorpayOrder = {
   currency: 'INR';
   name: string;
   description: string;
+  checkoutMode: 'live' | 'mock';
 };
 
 declare global {
@@ -56,6 +57,7 @@ type Data = {
     purpose: string;
     reversesPaymentId: string | null;
     clientName: string;
+    coachName: string | null;
     amount: string;
     method: string;
     status: string;
@@ -65,7 +67,7 @@ type Data = {
     createdAt: string;
     accrual: Accrual | null;
   }[];
-  subscriptions: { id: string; clientName: string; price: string }[];
+  subscriptions: { id: string; clientName: string; coachName: string | null; price: string }[];
   organizations: { id: string; name: string }[];
 };
 
@@ -83,8 +85,28 @@ export function MoneyWorkspace({ tenantId, initial }: { tenantId: string; initia
   const [actionStates, setActionStates] = useState<Record<string, ActionState>>({});
   const [proofNames, setProofNames] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
+  const [selectedSubscriptionIdState, setSelectedSubscriptionId] = useState(initial.subscriptions[0]?.id ?? '');
+  const [collectedSubscriptionIds, setCollectedSubscriptionIds] = useState<Set<string>>(new Set());
+  const availableSubscriptions = initial.subscriptions.filter((subscription) => !collectedSubscriptionIds.has(subscription.id));
   const confirmedTotal = initial.payments.filter((payment) => payment.status === 'confirmed').reduce((total, payment) => total + amountOf(payment.amount), 0);
   const pending = initial.payments.filter((payment) => payment.status === 'pending');
+  // Refreshing after a collection removes that subscription from the picker.
+  // Fall back to the next available option so the controlled select never keeps
+  // a stale, invisible value.
+  const selectedSubscriptionId = availableSubscriptions.some((subscription) => subscription.id === selectedSubscriptionIdState)
+    ? selectedSubscriptionIdState
+    : (availableSubscriptions[0]?.id ?? '');
+  const selectedSubscription = availableSubscriptions.find((subscription) => subscription.id === selectedSubscriptionId);
+  const coachClientPayments = initial.payments.filter((payment) => payment.purpose === 'client_subscription');
+  const awaitingVerification = coachClientPayments.filter((payment) => payment.status === 'pending');
+  const verifiedPayments = coachClientPayments.filter((payment) => payment.status === 'confirmed');
+  const awaitingVerificationAmount = awaitingVerification.reduce((total, payment) => total + amountOf(payment.amount), 0);
+  const verifiedCoachShare = verifiedPayments.reduce((total, payment) => total + amountOf(payment.accrual?.coachPayableAmount ?? '0'), 0);
+
+  // The refreshed server data is authoritative after checkout completes.
+  useEffect(() => {
+    setCollectedSubscriptionIds(new Set());
+  }, [initial.subscriptions]);
 
   function clearField(name: string) {
     setFieldErrors((current) => {
@@ -139,21 +161,16 @@ export function MoneyWorkspace({ tenantId, initial }: { tenantId: string; initia
     }, state === 'complete' ? 800 : 900);
   }
 
+  function refreshPaymentStatus() {
+    setError('');
+    router.refresh();
+  }
+
   function requireAmount(form: FormData, key: string) {
     const raw = valueOf(form, key);
     if (!raw) return 'Enter amount.';
     if (!amountPattern.test(raw)) return 'Use numbers only.';
     return Number(raw) > 0 ? '' : 'Use a valid amount.';
-  }
-
-  function validateHandle(form: FormData) {
-    const type = valueOf(form, 'type');
-    const value = valueOf(form, 'value');
-    const errors: Record<string, string> = {};
-    if (!value) errors.value = 'Enter handle.';
-    else if (type === 'upi' && !/^[\w.-]+@[\w.-]+$/.test(value)) errors.value = 'Use name@bank.';
-    else if (type === 'phone' && !/^[0-9+\-\s()]{7,20}$/.test(value)) errors.value = 'Check phone.';
-    return errors;
   }
 
   async function submit(url: string, method: string, body: unknown, action: string) {
@@ -179,37 +196,6 @@ export function MoneyWorkspace({ tenantId, initial }: { tenantId: string; initia
     }
   }
 
-  async function addHandle(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const errors = validateHandle(form);
-    if (!showErrors(errors)) return;
-    if (await submit('/api/money/handles', 'POST', {
-      tenantId,
-      partyId: initial.principalPartyId,
-      type: form.get('type'),
-      value: form.get('value'),
-      label: form.get('label'),
-      isDefault: form.get('isDefault') === 'on',
-    }, 'handle')) event.currentTarget.reset();
-  }
-
-  async function acceptClientPayment(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const errors: Record<string, string> = {};
-    if (!valueOf(form, 'subscriptionId')) errors.subscriptionId = 'Pick client.';
-    const amountError = requireAmount(form, 'amount');
-    if (amountError) errors.amount = amountError;
-    if (!showErrors(errors)) return;
-    if (await openRazorpay({
-      kind: 'client',
-      tenantId,
-      subscriptionId: form.get('subscriptionId'),
-      amount: form.get('amount'),
-    }, 'client-payment')) event.currentTarget.reset();
-  }
-
   async function acceptOrganizationPayment(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -226,15 +212,36 @@ export function MoneyWorkspace({ tenantId, initial }: { tenantId: string; initia
     }, 'organization-payment')) event.currentTarget.reset();
   }
 
+  async function acceptClientPayment(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const subscriptionId = valueOf(form, 'subscriptionId');
+    const subscription = availableSubscriptions.find((row) => row.id === subscriptionId);
+    if (!subscription) {
+      showErrors({ subscriptionId: 'Pick client.' });
+      return;
+    }
+    if (await openRazorpay({ kind: 'client', tenantId, subscriptionId, amount: subscription.price }, 'client-payment')) {
+      setCollectedSubscriptionIds((current) => new Set(current).add(subscriptionId));
+      event.currentTarget.reset();
+    }
+  }
+
   async function openRazorpay(body: Record<string, unknown>, action: string) {
     setBusy(true);
     setError('');
     setActionState(action, 'submitting');
     try {
-      await loadRazorpayCheckout();
       const response = await fetch('/api/money/razorpay/order', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
       const order = await response.json() as RazorpayOrder | { error?: string };
       if (!response.ok || !('orderId' in order)) throw new Error('error' in order ? order.error : 'Razorpay order failed.');
+      if (order.checkoutMode === 'mock') {
+        if (!window.confirm(`Mock payment: confirm ${inr.format(order.amountMinor / 100)}?`)) throw new Error('Payment was cancelled.');
+        setBusy(false);
+        settleAction(action, 'complete');
+        return true;
+      }
+      await loadRazorpayCheckout();
       await new Promise<void>((resolve, reject) => {
         const checkout = new window.Razorpay!({
           key: order.keyId,
@@ -246,16 +253,7 @@ export function MoneyWorkspace({ tenantId, initial }: { tenantId: string; initia
           retry: { enabled: true, max_count: 2 },
           theme: { color: '#0d6b65' },
           modal: { ondismiss: () => reject(new Error('Payment was cancelled.')) },
-          handler: async (result) => {
-            const confirmation = await fetch('/api/money/razorpay/confirm', {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ tenantId, paymentId: order.paymentId, razorpayOrderId: result.razorpay_order_id, razorpayPaymentId: result.razorpay_payment_id, razorpaySignature: result.razorpay_signature }),
-            });
-            const confirmationBody = await confirmation.json();
-            if (!confirmation.ok) reject(new Error(confirmationBody.error ?? 'Payment confirmation failed.'));
-            else resolve();
-          },
+          handler: () => resolve(),
         });
         checkout.open();
       });
@@ -264,7 +262,7 @@ export function MoneyWorkspace({ tenantId, initial }: { tenantId: string; initia
       return true;
     } catch (caught) {
       setBusy(false);
-      setError(caught instanceof Error ? caught.message : 'Razorpay payment failed.');
+      setError(caught instanceof Error ? caught.message.replaceAll('Razorpay', 'checkout') : 'Checkout payment failed.');
       settleAction(action, 'failed');
       return false;
     }
@@ -324,83 +322,44 @@ export function MoneyWorkspace({ tenantId, initial }: { tenantId: string; initia
     <div className="finance-workspace">
       <section className="finance-summary" aria-label="Collections overview">
         <FinanceMetric label="Confirmed" value={inr.format(confirmedTotal)} detail="Cleared inflow" tone="blue" />
-        <FinanceMetric label="Pending" value={String(pending.length)} detail="Need UTR or proof" tone="orange" />
-        <FinanceMetric label="Handles" value={String(initial.handles.length)} detail="Ways to collect" tone="green" />
-        <FinanceMetric label="Subscriptions" value={String(initial.subscriptions.length)} detail="Ready to bill" tone="purple" />
+        <FinanceMetric label="Pending" value={String(pending.length)} detail="Awaiting admin verification" tone="orange" />
+        <FinanceMetric label="Checkout" value="Soon" detail="Online collection" tone="green" />
+        <FinanceMetric label="Subscriptions" value={String(availableSubscriptions.length)} detail="Ready to bill" tone="purple" />
       </section>
 
       <div className="finance-command-grid">
         <section className="finance-command">
           <div>
             <p className="eyebrow">Primary action</p>
-            <h2>Accept payment.</h2>
-            <p>Create a Razorpay order and confirm it with server-side signature verification.</p>
+            <h2>Payment collection.</h2>
+            <p>Temporary: online checkout is still being finalized. For local end-to-end testing, set PAYMENT_GATEWAY_MODE=mock before starting the app. Manual UTR and proof-based collection are unavailable during this transition.</p>
           </div>
           <form className="finance-form" onSubmit={acceptClientPayment} noValidate>
-            <label>
+            <label className="finance-subscription-field">
               <span>Client subscription</span>
-              <select name="subscriptionId" required {...invalidProps('subscriptionId')}>
-                {initial.subscriptions.length ? initial.subscriptions.map((subscription) => (
+              <select name="subscriptionId" aria-label="Client subscription" value={selectedSubscriptionId} {...invalidProps('subscriptionId')} onChange={(event) => {
+                setSelectedSubscriptionId(event.currentTarget.value);
+                clearField('subscriptionId');
+              }}>
+                {availableSubscriptions.length ? availableSubscriptions.map((subscription) => (
                   <option key={subscription.id} value={subscription.id}>
-                    {subscription.clientName} · {inr.format(amountOf(subscription.price))}
+                    {subscription.clientName} · {subscription.coachName ? `Coach: ${subscription.coachName} · ` : ''}{inr.format(amountOf(subscription.price))}
                   </option>
                 )) : <option value="">No subscriptions available</option>}
               </select>
               <FieldError id="subscriptionId-error" message={fieldErrors.subscriptionId} />
+              <small className="muted">{selectedSubscription?.coachName ? `Assigned coach: ${selectedSubscription.coachName} · ` : ''}Fixed amount: {selectedSubscription ? inr.format(amountOf(selectedSubscription.price)) : '—'}</small>
             </label>
-            <label>
-              <span>Amount</span>
-              <input name="amount" placeholder="0.00" required {...amountProps('amount')} />
-              <FieldError id="amount-error" message={fieldErrors.amount} />
-            </label>
-            <button className="primary-button" disabled={busy || !initial.subscriptions.length} data-state={stateOf('client-payment')} aria-busy={stateOf('client-payment') === 'submitting'}>
-              {stateOf('client-payment') === 'submitting' ? 'Opening Razorpay' : 'Accept with Razorpay'}
+            <button className="primary-button" disabled={busy || !availableSubscriptions.length} data-state={stateOf('client-payment')} aria-busy={stateOf('client-payment') === 'submitting'}>
+              {stateOf('client-payment') === 'submitting' ? 'Starting checkout' : 'Continue to checkout'}
             </button>
           </form>
-        </section>
-
-        <section className="surface finance-side-card">
-          <div className="section-heading">
-            <div><p className="eyebrow">Collection setup</p><h2>Pay-in handles</h2></div>
-            <span className="count-label">{initial.handles.length}</span>
-          </div>
-          <div className="finance-handle-list">
-            {initial.handles.length ? initial.handles.map((handle) => (
-              <div className="finance-handle" key={handle.id}>
-                <span className="finance-icon">{handle.type.slice(0, 1).toUpperCase()}</span>
-                <div>
-                  <strong>{handle.label || handle.type.toUpperCase()}</strong>
-                  <p>{handle.value}{handle.isDefault ? ' · Default' : ''}</p>
-                </div>
-              </div>
-            )) : <p className="muted">Add a UPI ID, phone number, or QR reference before collecting.</p>}
-          </div>
-          <details className="finance-disclosure">
-            <summary>Add collection handle</summary>
-            <form className="stack-form" onSubmit={addHandle} noValidate>
-              <label>
-                <span>Type</span>
-                <select name="type" {...invalidProps('type')}><option value="upi">UPI</option><option value="phone">Phone</option><option value="qr">QR reference</option></select>
-                <FieldError id="type-error" message={fieldErrors.type} />
-              </label>
-              <label>
-                <span>Handle</span>
-                <input name="value" required {...invalidProps('value')} />
-                <FieldError id="value-error" message={fieldErrors.value} />
-              </label>
-              <label><span>Label</span><input name="label" /></label>
-              <label className="checkbox-row"><input name="isDefault" type="checkbox" /> Make this default</label>
-              <button className="secondary-button" disabled={busy} data-state={stateOf('handle')} aria-busy={stateOf('handle') === 'submitting'}>
-                {stateOf('handle') === 'submitting' ? 'Saving' : 'Save handle'}
-              </button>
-            </form>
-          </details>
         </section>
       </div>
 
       {error ? <p className="form-error finance-error" role="alert">{error}</p> : null}
 
-      <section className="surface finance-records">
+      {initial.ownerAccess ? <section className="surface finance-records">
         <div className="section-heading">
           <div>
             <p className="eyebrow">Verification queue</p>
@@ -416,7 +375,8 @@ export function MoneyWorkspace({ tenantId, initial }: { tenantId: string; initia
                 <span className={`finance-status ${payment.status}`}>{payment.status}</span>
                 <div>
                   <h3>{payment.clientName}</h3>
-                  <p>{payment.purpose.replaceAll('_', ' ')} · {payment.gatewayProvider === 'razorpay' ? 'RAZORPAY' : payment.method.toUpperCase()} · {new Date(payment.createdAt).toLocaleString('en-IN')}</p>
+                  <p>{payment.purpose.replaceAll('_', ' ')} · {payment.gatewayProvider ? 'ONLINE PAYMENT' : payment.method.toUpperCase()} · {new Date(payment.createdAt).toLocaleString('en-IN')}</p>
+                  {payment.coachName ? <small>Assigned coach: {payment.coachName}</small> : null}
                   {payment.accrual ? (
                     <small>
                       {payment.accrual.kind === 'correction' ? 'Correction' : `Owner commission ${payment.accrual.rateApplied}%`}
@@ -428,7 +388,7 @@ export function MoneyWorkspace({ tenantId, initial }: { tenantId: string; initia
                 </div>
               </div>
               <strong className="finance-amount">{inr.format(amountOf(payment.amount))}</strong>
-              {payment.status === 'pending' && payment.gatewayProvider !== 'razorpay' ? (
+              {payment.status === 'pending' ? (
                 <form className="finance-inline-form" onSubmit={(event) => confirm(event, payment.id)} noValidate>
                   <label className="finance-compact-field">
                     <span className="sr-only">UTR</span>
@@ -452,7 +412,7 @@ export function MoneyWorkspace({ tenantId, initial }: { tenantId: string; initia
                     {stateOf(`confirm-${payment.id}`) === 'submitting' ? 'Confirming' : 'Confirm'}
                   </button>
                 </form>
-              ) : payment.status === 'pending' ? <span className="finance-proof">Razorpay order pending</span> : <span className="finance-proof">{payment.gatewayProvider === 'razorpay' ? 'Razorpay payment' : 'UTR'} {payment.utr ?? 'Proof attached'}</span>}
+              ) : payment.status === 'pending' ? <span className="finance-proof">Online payment pending</span> : <span className="finance-proof">{payment.gatewayProvider ? 'Online payment' : 'UTR'} {payment.utr ?? 'Proof attached'}</span>}
               {initial.ownerAccess && payment.purpose === 'client_subscription' && payment.status === 'confirmed' ? (
                 <details className="finance-disclosure finance-refund">
                   <summary>Post a refund</summary>
@@ -472,7 +432,21 @@ export function MoneyWorkspace({ tenantId, initial }: { tenantId: string; initia
             </article>
           )) : <p className="muted">No payment records yet. Record a client payment to begin the audit trail.</p>}
         </div>
-      </section>
+      </section> : <section className="surface finance-records coach-payment-status">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">Payment status</p>
+            <h2>{awaitingVerification.length ? 'Awaiting administrator verification' : verifiedPayments.length ? 'Payments verified' : 'No client payments yet'}</h2>
+            <p className="muted">{awaitingVerification.length ? 'The owner needs to verify these client payments before they create coach earnings.' : verifiedPayments.length ? 'Verified client payments have created earning records. View your Earnings page for payout and payslip status.' : 'When you collect a client payment, its verification status will appear here.'}</p>
+          </div>
+          <button className="secondary-button finance-status-refresh" type="button" onClick={refreshPaymentStatus}>Refresh status</button>
+        </div>
+        <div className="coach-payment-status-grid">
+          <div><span>Awaiting verification</span><strong>{awaitingVerification.length}</strong><small>{inr.format(awaitingVerificationAmount)} from clients</small></div>
+          <div><span>Verified payments</span><strong>{verifiedPayments.length}</strong><small>{inr.format(verifiedPayments.reduce((total, payment) => total + amountOf(payment.amount), 0))} confirmed</small></div>
+          <div><span>Coach share recorded</span><strong>{inr.format(verifiedCoachShare)}</strong><small>From verified payments</small></div>
+        </div>
+      </section>}
 
       {initial.ownerAccess ? (
         <div className="finance-secondary-grid">
@@ -494,7 +468,7 @@ export function MoneyWorkspace({ tenantId, initial }: { tenantId: string; initia
                 <FieldError id="organizationAmount-error" message={fieldErrors.organizationAmount} />
               </label>
               <button className="secondary-button" disabled={busy || !initial.organizations.length} data-state={stateOf('organization-payment')} aria-busy={stateOf('organization-payment') === 'submitting'}>
-                {stateOf('organization-payment') === 'submitting' ? 'Opening Razorpay' : 'Accept with Razorpay'}
+                {stateOf('organization-payment') === 'submitting' ? 'Opening checkout' : 'Accept payment'}
               </button>
             </form>
           </section>

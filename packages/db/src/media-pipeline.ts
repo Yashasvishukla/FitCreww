@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { BlobServiceClient, BlobSASPermissions, StorageSharedKeyCredential, generateBlobSASQueryParameters } from '@azure/storage-blob';
+import { effectiveAssignments } from '@fitcrew/application';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { accessGateForPrincipal, resolvePrincipal } from './access-gate.js';
 import { prisma } from './prisma.js';
@@ -56,8 +57,8 @@ export async function uploadPaymentProof(client: PrismaClient, tenantId: string,
   return withTenant(client as never, tenantId, async (tx: Prisma.TransactionClient) => {
     const principal = await resolvePrincipal(tx, tenantId, userId);
     const payment = principal && await tx.paymentRecord.findFirst({ where: { id: input.paymentId, status: 'pending' }, include: { subscription: { include: { client: { include: { currentCoachAssignment: true } } } } } });
-    const assignment = payment?.subscription?.client.currentCoachAssignment;
-    if (!principal || !payment || !assignment || !(await accessGateForPrincipal(tx, principal).can(principal, 'update', { type: 'payment', tenantId, coachPartyId: assignment.coachPartyId, organizationId: payment.subscription?.client.organizationId ?? undefined }))) throw new MediaPipelineError('Payment proof upload is not permitted.');
+    const isOwner = principal && effectiveAssignments(principal).some((assignment) => assignment.role === 'OwnerAdmin' && assignment.scopeType === 'tenant');
+    if (!principal || !payment || !isOwner) throw new MediaPipelineError('Payment proof upload is not permitted.');
     const { default: sharp } = await import('sharp');
     const sanitized = await sharp(input.bytes).rotate().removeAlpha().jpeg({ quality: 90 }).toBuffer();
     const blobKey = `${tenantId}/payment-proofs/${payment.id}/${randomUUID()}.jpg`;
