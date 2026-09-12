@@ -75,6 +75,20 @@ describe('tenant-scoping query rewrite', () => {
     ).toThrow('must include the current tenantId');
   });
 
+  it('keeps the unique selector at the root for scoped updates', () => {
+    expect(
+      applyTenantScope({
+        tenantId,
+        model: 'Engagement',
+        operation: 'update',
+        args: { where: { id: 'engagement-id' }, data: { commissionRate: '8.00' } },
+      }),
+    ).toEqual({
+      where: { id: 'engagement-id', tenantId },
+      data: { commissionRate: '8.00' },
+    });
+  });
+
   it('stamps tenantId on create payloads', () => {
     expect(
       applyTenantScope({

@@ -7,7 +7,7 @@ export const NOTIFICATIONS_MODULE = 'notifications';
 
 export type InviteEmail = {
   readonly recipient: string;
-  readonly role: 'Coach' | 'OrgAdmin';
+  readonly role: 'OwnerAdmin' | 'Coach' | 'OrgAdmin';
   readonly inviteUrl: string;
   readonly expiresAt: Date;
 };

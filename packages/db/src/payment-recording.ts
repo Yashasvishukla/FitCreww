@@ -1,6 +1,7 @@
 import { ManualConfirmationSource, PercentageWithLifespanWindow, postLedgerEntry, type CommissionResult, type PostLedgerInput } from '@fitcrew/application';
 import { Money } from '@fitcrew/domain';
 import { Prisma, type PrismaClient } from '@prisma/client';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import { accessGateForPrincipal, resolvePrincipal } from './access-gate.js';
 import { PrismaLedgerRepository } from './ledger.js';
 import { withTenant } from './with-tenant.js';
@@ -8,10 +9,13 @@ import { withTenant } from './with-tenant.js';
 type Tx = Prisma.TransactionClient;
 export type PayoutHandleInput = { partyId: string; type: 'upi' | 'phone' | 'qr'; value: string; label?: string; isDefault?: boolean };
 export type UpdatePayoutHandleInput = PayoutHandleInput & { handleId: string };
-export type RecordClientPaymentInput = { subscriptionId: string; amount: string | number; method: 'upi' | 'qr' | 'phone' | 'other' };
-export type RecordOrganizationPaymentInput = { organizationId: string; amount: string | number; method: 'upi' | 'qr' | 'phone' | 'other' };
+type PaymentMethodInput = 'upi' | 'qr' | 'phone' | 'razorpay' | 'other';
+export type RecordClientPaymentInput = { subscriptionId: string; amount: string | number; method: PaymentMethodInput };
+export type RecordOrganizationPaymentInput = { organizationId: string; amount: string | number; method: PaymentMethodInput };
 export type ConfirmPaymentInput = { paymentId: string; utr?: string; proofMediaAssetId?: string };
-export type ReversePaymentInput = { paymentId: string; method: 'upi' | 'qr' | 'phone' | 'other'; utr?: string; proofMediaAssetId?: string };
+export type ConfirmRazorpayPaymentInput = { paymentId: string; razorpayOrderId: string; razorpayPaymentId: string; razorpaySignature: string };
+export type CreateRazorpayOrderInput = ({ kind: 'client'; subscriptionId: string } | { kind: 'organization'; organizationId: string }) & { amount: string | number };
+export type ReversePaymentInput = { paymentId: string; method: PaymentMethodInput; utr?: string; proofMediaAssetId?: string };
 export class PaymentRecordingError extends Error { constructor(message: string) { super(message); this.name = 'PaymentRecordingError'; } }
 
 export async function savePayoutHandleForUser(client: PrismaClient, tenantId: string, userId: string, input: PayoutHandleInput) {
@@ -65,7 +69,7 @@ export async function recordClientPaymentForUser(client: PrismaClient, tenantId:
     if (amount.amountMinor <= 0n) throw new PaymentRecordingError('Payment amount must be positive.');
     const payment = await tx.paymentRecord.create({ data: { tenantId, payerPartyId: subscription.client.partyId, payeePartyId: owner.id, subscriptionId: subscription.id, purpose: 'client_subscription', amount: amount.toString(), method: input.method, status: 'pending' } });
     await audit(tx, tenantId, principal.partyId, 'create', 'payment', payment.id, { status: 'pending', amount: amount.toString(), subscriptionId: subscription.id });
-    return { id: payment.id, status: payment.status };
+    return { id: payment.id, status: payment.status, amount: payment.amount.toString() };
   });
 }
 
@@ -81,7 +85,7 @@ export async function recordOrganizationPaymentForUser(client: PrismaClient, ten
     try {
       const payment = await tx.paymentRecord.create({ data: { tenantId, payerPartyId: organization.partyId, payeePartyId: owner.id, organizationId: organization.id, purpose: 'org_agreement', amount: amount.toString(), method: input.method, status: 'pending' } });
       await audit(tx, tenantId, principal.partyId, 'create', 'payment', payment.id, { status: 'pending', purpose: 'org_agreement', amount: amount.toString(), organizationId: organization.id });
-      return { id: payment.id, status: payment.status };
+      return { id: payment.id, status: payment.status, amount: payment.amount.toString() };
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') throw new PaymentRecordingError('This organization already has an agreement payment record.');
       throw error;
@@ -89,36 +93,52 @@ export async function recordOrganizationPaymentForUser(client: PrismaClient, ten
   });
 }
 
+export async function createRazorpayOrderForUser(client: PrismaClient, tenantId: string, userId: string, input: CreateRazorpayOrderInput) {
+  const pending = input.kind === 'client'
+    ? await recordClientPaymentForUser(client, tenantId, userId, { subscriptionId: input.subscriptionId, amount: input.amount, method: 'razorpay' })
+    : await recordOrganizationPaymentForUser(client, tenantId, userId, { organizationId: input.organizationId, amount: input.amount, method: 'razorpay' });
+  const order = await createRazorpayOrder({ paymentId: pending.id, amountMinor: decimalToMinor(pending.amount), tenantId });
+  await withTenant(client as never, tenantId, async (tx: Tx) => {
+    const updated = await tx.paymentRecord.updateMany({
+      where: { id: pending.id, status: 'pending', gatewayOrderId: null },
+      data: { gatewayProvider: 'razorpay', gatewayOrderId: order.id },
+    });
+    if (updated.count !== 1) throw new PaymentRecordingError('Payment order was already initialized.');
+  });
+  return { keyId: razorpayConfig().keyId, paymentId: pending.id, orderId: order.id, amountMinor: order.amount, currency: order.currency, name: 'FitCrew', description: input.kind === 'client' ? 'Client subscription payment' : 'Organization agreement payment' };
+}
+
+export async function confirmRazorpayPaymentForUser(client: PrismaClient, tenantId: string, userId: string, input: ConfirmRazorpayPaymentInput) {
+  return withTenant(client as never, tenantId, async (tx: Tx) => {
+    const principal = await requirePrincipal(tx, tenantId, userId);
+    const payment = await tx.paymentRecord.findFirst({ where: { id: input.paymentId, gatewayProvider: 'razorpay', gatewayOrderId: input.razorpayOrderId }, include: { subscription: { include: { client: { include: { currentCoachAssignment: true } } } } } });
+    if (!payment || payment.status !== 'pending') throw new PaymentRecordingError('Razorpay payment is unavailable for confirmation.');
+    verifyRazorpaySignature(input);
+    return confirmPaymentTx(tx, tenantId, principal, payment, {
+      source: 'gateway',
+      confirmedAt: new Date(),
+      utr: input.razorpayPaymentId,
+      proofMediaAssetId: null,
+    }, {
+      gatewayProvider: 'razorpay',
+      gatewayOrderId: input.razorpayOrderId,
+      gatewayPaymentId: input.razorpayPaymentId,
+      gatewaySignature: input.razorpaySignature,
+    });
+  });
+}
+
 export async function confirmPaymentForUser(client: PrismaClient, tenantId: string, userId: string, input: ConfirmPaymentInput) {
   return withTenant(client as never, tenantId, async (tx: Tx) => {
     const principal = await requirePrincipal(tx, tenantId, userId);
     const payment = await tx.paymentRecord.findFirst({ where: { id: input.paymentId }, include: { subscription: { include: { client: { include: { currentCoachAssignment: true } } } } } });
-    const subscription = payment?.subscription;
-    const assignment = subscription?.client.currentCoachAssignment;
-    const isOrganizationPayment = payment?.purpose === 'org_agreement' && payment.organizationId !== null;
-    const allowed = payment && payment.status === 'pending' && ((subscription && assignment && await accessGateForPrincipal(tx, principal).can(principal, 'update', { type: 'payment', id: payment.id, tenantId, coachPartyId: assignment.coachPartyId, organizationId: subscription.client.organizationId ?? undefined })) || (isOrganizationPayment && principal.assignments.some((a) => a.role === 'OwnerAdmin')));
-    if (!payment || !allowed) throw new PaymentRecordingError('Payment is unavailable for confirmation.');
+    if (!payment || payment.gatewayProvider === 'razorpay') throw new PaymentRecordingError('Payment is unavailable for manual confirmation.');
     const confirmation = await new ManualConfirmationSource(input).awaitConfirmation(payment.id);
     if (confirmation.proofMediaAssetId) {
       const proof = await tx.mediaAsset.findFirst({ where: { id: confirmation.proofMediaAssetId, status: 'active' } });
       if (!proof) throw new PaymentRecordingError('Payment proof was not found.');
     }
-    const updated = await tx.paymentRecord.updateMany({ where: { id: payment.id, status: 'pending' }, data: { status: 'confirmed', utr: confirmation.utr, proofMediaAssetId: confirmation.proofMediaAssetId, confirmationSource: confirmation.source, confirmedByPartyId: principal.partyId, confirmedAt: confirmation.confirmedAt } });
-    if (updated.count !== 1) throw new PaymentRecordingError('Payment was already confirmed.');
-    const amountMinor = decimalToMinor(payment.amount.toString());
-    const commission = subscription && assignment ? await accrueCommission(tx, tenantId, payment.id, payment.payeePartyId, subscription.client.id, assignment.id, assignment.coachPartyId, amountMinor, confirmation.confirmedAt) : null;
-    const lines: PostLedgerInput['lines'] = [
-      { partyId: payment.payeePartyId, purpose: 'owner_cash', direction: 'debit', amountMinor: decimalToMinor(payment.amount.toString()) },
-      { partyId: payment.payerPartyId, purpose: isOrganizationPayment ? 'org_agreement_receivable' : 'client_receivable', direction: 'credit', amountMinor: decimalToMinor(payment.amount.toString()) },
-      ...(commission ? [
-        { partyId: payment.payerPartyId, purpose: 'client_receivable' as const, direction: 'debit' as const, amountMinor },
-        ...(commission.commissionAmountMinor > 0n ? [{ partyId: payment.payeePartyId, purpose: 'commission_income' as const, direction: 'credit' as const, amountMinor: commission.commissionAmountMinor }] : []),
-        { partyId: assignment!.coachPartyId, purpose: 'coach_payable' as const, direction: 'credit' as const, amountMinor: commission.coachPayableAmountMinor },
-      ] : []),
-    ];
-    await postLedgerEntry(new PrismaLedgerRepository(tx), { tenantId, description: `Client payment ${payment.id}`, referenceType: 'payment', referenceId: payment.id, lines });
-    await audit(tx, tenantId, principal.partyId, 'update', 'payment', payment.id, { status: 'confirmed', source: confirmation.source, utr: confirmation.utr, proofMediaAssetId: confirmation.proofMediaAssetId, commissionAccrued: commission ? minorUnitsToAmount(commission.commissionAmountMinor) : null });
-    return { id: payment.id, status: 'confirmed' as const, confirmedAt: confirmation.confirmedAt.toISOString(), commissionAmount: commission ? minorUnitsToAmount(commission.commissionAmountMinor) : null, coachPayableAmount: commission ? minorUnitsToAmount(commission.coachPayableAmountMinor) : null };
+    return confirmPaymentTx(tx, tenantId, principal, payment, confirmation);
   });
 }
 
@@ -176,8 +196,34 @@ export async function getMoneyWorkspaceForUser(client: PrismaClient, tenantId: s
       ownerAccess ? tx.organization.findMany({ where: { tenantId, status: 'active' }, include: { party: true }, orderBy: { createdAt: 'desc' } }) : Promise.resolve([]),
       tx.tenantConfig.findFirstOrThrow({ where: { tenantId } }),
     ]);
-    return { ownerAccess, principalPartyId: principal.partyId, ownerPartyId: owner.id, refundCoachClawbackRate: config.refundCoachClawbackRate.toString(), handles: handles.map((h) => ({ id: h.id, partyId: h.partyId, partyName: h.party.displayName, type: h.type, value: h.value, label: h.label, isDefault: h.isDefault })), payments: payments.map((p) => { const accrual = p.commissionAccruals[0]; return { id: p.id, purpose: p.purpose, reversesPaymentId: p.reversesPaymentId, clientName: p.subscription?.client.party.displayName ?? p.payer.displayName, amount: p.amount.toString(), method: p.method, status: p.status, utr: p.utr, createdAt: p.createdAt.toISOString(), confirmedAt: p.confirmedAt?.toISOString() ?? null, accrual: accrual ? { kind: accrual.kind, commissionAmount: accrual.commissionAmount.toString(), coachPayableAmount: accrual.coachPayableAmount.toString(), rateApplied: accrual.rateApplied.toString(), withinLifespan: accrual.withinLifespan, windowEndAt: accrual.windowEndAt.toISOString() } : null }; }), subscriptions: subscriptions.map((s) => ({ id: s.id, clientName: s.client.party.displayName, price: s.price.toString() })), organizations: organizations.map((organization) => ({ id: organization.id, name: organization.party.displayName })) };
+    return { ownerAccess, principalPartyId: principal.partyId, ownerPartyId: owner.id, refundCoachClawbackRate: config.refundCoachClawbackRate.toString(), handles: handles.map((h) => ({ id: h.id, partyId: h.partyId, partyName: h.party.displayName, type: h.type, value: h.value, label: h.label, isDefault: h.isDefault })), payments: payments.map((p) => { const accrual = p.commissionAccruals[0]; return { id: p.id, purpose: p.purpose, reversesPaymentId: p.reversesPaymentId, clientName: p.subscription?.client.party.displayName ?? p.payer.displayName, amount: p.amount.toString(), method: p.method, status: p.status, utr: p.utr, gatewayProvider: p.gatewayProvider, gatewayOrderId: p.gatewayOrderId, createdAt: p.createdAt.toISOString(), confirmedAt: p.confirmedAt?.toISOString() ?? null, accrual: accrual ? { kind: accrual.kind, commissionAmount: accrual.commissionAmount.toString(), coachPayableAmount: accrual.coachPayableAmount.toString(), rateApplied: accrual.rateApplied.toString(), withinLifespan: accrual.withinLifespan, windowEndAt: accrual.windowEndAt.toISOString() } : null }; }), subscriptions: subscriptions.map((s) => ({ id: s.id, clientName: s.client.party.displayName, price: s.price.toString() })), organizations: organizations.map((organization) => ({ id: organization.id, name: organization.party.displayName })) };
   });
+}
+
+type PaymentWithConfirmationRelations = Prisma.PaymentRecordGetPayload<{ include: { subscription: { include: { client: { include: { currentCoachAssignment: true } } } } } }>;
+
+async function confirmPaymentTx(tx: Tx, tenantId: string, principal: Awaited<ReturnType<typeof requirePrincipal>>, payment: PaymentWithConfirmationRelations, confirmation: { source: 'manual' | 'gateway'; confirmedAt: Date; utr: string | null; proofMediaAssetId: string | null }, gateway?: { gatewayProvider: string; gatewayOrderId: string; gatewayPaymentId: string; gatewaySignature: string }) {
+  const subscription = payment.subscription;
+  const assignment = subscription?.client.currentCoachAssignment;
+  const isOrganizationPayment = payment.purpose === 'org_agreement' && payment.organizationId !== null;
+  const allowed = payment.status === 'pending' && ((subscription && assignment && await accessGateForPrincipal(tx, principal).can(principal, 'update', { type: 'payment', id: payment.id, tenantId, coachPartyId: assignment.coachPartyId, organizationId: subscription.client.organizationId ?? undefined })) || (isOrganizationPayment && principal.assignments.some((a) => a.role === 'OwnerAdmin')));
+  if (!allowed) throw new PaymentRecordingError('Payment is unavailable for confirmation.');
+  const updated = await tx.paymentRecord.updateMany({ where: { id: payment.id, status: 'pending' }, data: { status: 'confirmed', utr: confirmation.utr, proofMediaAssetId: confirmation.proofMediaAssetId, confirmationSource: confirmation.source, confirmedByPartyId: principal.partyId, confirmedAt: confirmation.confirmedAt, ...gateway } });
+  if (updated.count !== 1) throw new PaymentRecordingError('Payment was already confirmed.');
+  const amountMinor = decimalToMinor(payment.amount.toString());
+  const commission = subscription && assignment ? await accrueCommission(tx, tenantId, payment.id, payment.payeePartyId, subscription.client.id, assignment.id, assignment.coachPartyId, amountMinor, confirmation.confirmedAt) : null;
+  const lines: PostLedgerInput['lines'] = [
+    { partyId: payment.payeePartyId, purpose: 'owner_cash', direction: 'debit', amountMinor },
+    { partyId: payment.payerPartyId, purpose: isOrganizationPayment ? 'org_agreement_receivable' : 'client_receivable', direction: 'credit', amountMinor },
+    ...(commission ? [
+      { partyId: payment.payerPartyId, purpose: 'client_receivable' as const, direction: 'debit' as const, amountMinor },
+      ...(commission.commissionAmountMinor > 0n ? [{ partyId: payment.payeePartyId, purpose: 'commission_income' as const, direction: 'credit' as const, amountMinor: commission.commissionAmountMinor }] : []),
+      { partyId: assignment!.coachPartyId, purpose: 'coach_payable' as const, direction: 'credit' as const, amountMinor: commission.coachPayableAmountMinor },
+    ] : []),
+  ];
+  await postLedgerEntry(new PrismaLedgerRepository(tx), { tenantId, description: `${isOrganizationPayment ? 'Organization' : 'Client'} payment ${payment.id}`, referenceType: 'payment', referenceId: payment.id, lines });
+  await audit(tx, tenantId, principal.partyId, 'update', 'payment', payment.id, { status: 'confirmed', source: confirmation.source, utr: confirmation.utr, proofMediaAssetId: confirmation.proofMediaAssetId, gatewayProvider: gateway?.gatewayProvider ?? null, gatewayOrderId: gateway?.gatewayOrderId ?? null, gatewayPaymentId: gateway?.gatewayPaymentId ?? null, commissionAccrued: commission ? minorUnitsToAmount(commission.commissionAmountMinor) : null });
+  return { id: payment.id, status: 'confirmed' as const, confirmedAt: confirmation.confirmedAt.toISOString(), commissionAmount: commission ? minorUnitsToAmount(commission.commissionAmountMinor) : null, coachPayableAmount: commission ? minorUnitsToAmount(commission.coachPayableAmountMinor) : null };
 }
 
 function validateHandle(type: PayoutHandleInput['type'], raw: string): string { const value = raw.trim(); if (!value || value.length > 500) throw new PaymentRecordingError('A valid payout handle is required.'); if (type === 'upi' && !/^[\w.-]{2,256}@[A-Za-z]{2,64}$/.test(value)) throw new PaymentRecordingError('UPI ID is invalid.'); if (type === 'phone' && !/^\+?[1-9]\d{9,14}$/.test(value)) throw new PaymentRecordingError('Phone number is invalid.'); return value; }
@@ -186,6 +232,27 @@ function decimalRateToBasisPoints(value: string): number { const [major, fractio
 function minorUnitsToAmount(value: bigint): string { return `${value / 100n}.${(value % 100n).toString().padStart(2, '0')}`; }
 function amountSigned(value: bigint): string { const sign = value < 0n ? '-' : ''; const absolute = value < 0n ? -value : value; return `${sign}${absolute / 100n}.${(absolute % 100n).toString().padStart(2, '0')}`; }
 function divideRoundHalfUp(numerator: bigint, denominator: bigint): bigint { return (numerator + denominator / 2n) / denominator; }
+function razorpayConfig() { const keyId = process.env.RAZORPAY_KEY_ID?.trim(); const keySecret = process.env.RAZORPAY_KEY_SECRET?.trim(); if (!keyId || !keySecret) throw new PaymentRecordingError('Razorpay credentials are not configured.'); return { keyId, keySecret }; }
+async function createRazorpayOrder(input: { paymentId: string; amountMinor: bigint; tenantId: string }): Promise<{ id: string; amount: number; currency: 'INR' }> {
+  const { keyId, keySecret } = razorpayConfig();
+  const response = await fetch('https://api.razorpay.com/v1/orders', {
+    method: 'POST',
+    headers: {
+      authorization: `Basic ${Buffer.from(`${keyId}:${keySecret}`).toString('base64')}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ amount: Number(input.amountMinor), currency: 'INR', receipt: input.paymentId, notes: { tenantId: input.tenantId, paymentId: input.paymentId } }),
+  });
+  const body = await response.json().catch(() => null) as { id?: string; amount?: number; currency?: string; error?: { description?: string } } | null;
+  if (!response.ok || !body?.id || body.currency !== 'INR' || typeof body.amount !== 'number') throw new PaymentRecordingError(body?.error?.description ?? 'Razorpay order could not be created.');
+  return { id: body.id, amount: body.amount, currency: 'INR' };
+}
+function verifyRazorpaySignature(input: ConfirmRazorpayPaymentInput) {
+  const expected = createHmac('sha256', razorpayConfig().keySecret).update(`${input.razorpayOrderId}|${input.razorpayPaymentId}`).digest('hex');
+  const expectedBytes = Buffer.from(expected, 'hex');
+  const actualBytes = Buffer.from(input.razorpaySignature, 'hex');
+  if (expectedBytes.length !== actualBytes.length || !timingSafeEqual(expectedBytes, actualBytes)) throw new PaymentRecordingError('Razorpay payment signature is invalid.');
+}
 async function validateProof(tx: Tx, proofMediaAssetId: string | null) { if (proofMediaAssetId && !(await tx.mediaAsset.findFirst({ where: { id: proofMediaAssetId, status: 'active' } }))) throw new PaymentRecordingError('Payment proof was not found.'); }
 async function accrueCommission(tx: Tx, tenantId: string, paymentId: string, ownerPartyId: string, clientId: string, assignmentId: string, coachPartyId: string, grossAmountMinor: bigint, confirmedAt: Date): Promise<CommissionResult | null> {
   if (ownerPartyId === coachPartyId) return null;

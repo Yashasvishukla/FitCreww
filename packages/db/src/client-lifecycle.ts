@@ -7,6 +7,7 @@ import { hashPassword } from './password.js';
 
 type Tx = Prisma.TransactionClient;
 export type EnrollmentInput = { name: string; email?: string; password?: string; price: string | number; coachPartyId: string; organizationId: string | null; schedule: unknown; photoConsent: boolean; subscriptionDurationMonths: number };
+export type ReassignCoachInput = { clientId: string; coachPartyId: string; reason?: string };
 export type BaselineInput = { clientId: string; measurements: Record<string, number>; postureNotes: string; photoAssetIds?: string[] };
 export type EvaluationInput = BaselineInput & { evaluatedAt?: string };
 export type SatisfactionInput = { clientId: string; score: number; comment?: string };
@@ -22,7 +23,9 @@ export async function enrollClientForUser(client: PrismaClient, tenantId: string
     const name = input.name.trim();
     if (!name || name.length > 200 || !Number.isInteger(input.subscriptionDurationMonths) || input.subscriptionDurationMonths <= 0) throw new ClientLifecycleError('Valid client details are required.');
     const price = Money.inr(input.price);
-    const coach = await tx.party.findFirst({ where: { id: input.coachPartyId, kind: 'person', status: 'active', roleAssignments: { some: { role: 'Coach', OR: input.organizationId ? [{ scopeType: 'tenant' }, { scopeType: 'organization', scopeId: input.organizationId }] : [{ scopeType: 'tenant' }] } } } });
+    const isOwner = principal.assignments.some((a) => a.role === 'OwnerAdmin');
+    const coachScopes = input.organizationId && !isOwner ? [{ scopeType: 'organization' as const, scopeId: input.organizationId }] : input.organizationId ? [{ scopeType: 'tenant' as const }, { scopeType: 'organization' as const, scopeId: input.organizationId }] : [{ scopeType: 'tenant' as const }];
+    const coach = await tx.party.findFirst({ where: { id: input.coachPartyId, kind: 'person', status: 'active', roleAssignments: { some: { role: 'Coach', OR: coachScopes } } } });
     if (!coach) throw new ClientLifecycleError('A valid active coach is required.');
     if (input.organizationId) {
       const organization = await tx.organization.findFirst({ where: { id: input.organizationId, status: 'active' } });
@@ -52,6 +55,27 @@ export async function listClientsForUser(client: PrismaClient, tenantId: string,
     if (!principal) throw new ClientLifecycleError('Forbidden.');
     const rows = await tx.client.findMany({ where: accessGateForPrincipal(tx, principal).scopeQuery(principal, 'Client') as never, include: { party: true, currentCoachAssignment: true }, orderBy: { party: { displayName: 'asc' } } });
     return rows.map((row) => ({ clientId: row.id, name: row.party.displayName, organizationId: row.organizationId, coachPartyId: row.currentCoachAssignment?.coachPartyId ?? null, status: row.status, workflowState: row.workflowState, photoConsent: row.photoConsent }));
+  });
+}
+
+/** Close the current dated assignment and append a new one atomically. */
+export async function reassignClientCoachForUser(client: PrismaClient, tenantId: string, userId: string, input: ReassignCoachInput) {
+  return withTenant(client as never, tenantId, async (tx: Tx) => {
+    const principal = await resolvePrincipal(tx, tenantId, userId);
+    if (!principal) throw new ClientLifecycleError('Forbidden.');
+    const record = await tx.client.findFirst({ where: { id: input.clientId }, include: { currentCoachAssignment: true } });
+    if (!record) throw new ClientLifecycleError('Client was not found.');
+    if (!(await accessGateForPrincipal(tx, principal).can(principal, 'update', { type: 'client', id: record.id, tenantId, organizationId: record.organizationId ?? undefined }))) throw new ClientLifecycleError('Forbidden.');
+    const isOwner = principal.assignments.some((a) => a.role === 'OwnerAdmin');
+    const coachScopes = record.organizationId && !isOwner ? [{ scopeType: 'organization' as const, scopeId: record.organizationId }] : record.organizationId ? [{ scopeType: 'tenant' as const }, { scopeType: 'organization' as const, scopeId: record.organizationId }] : [{ scopeType: 'tenant' as const }];
+    const coach = await tx.party.findFirst({ where: { id: input.coachPartyId, tenantId, kind: 'person', status: 'active', roleAssignments: { some: { role: 'Coach', validTo: null, OR: coachScopes } } } });
+    if (!coach) throw new ClientLifecycleError('A valid coach for this organization is required.');
+    const from = today();
+    if (record.currentCoachAssignment && record.currentCoachAssignment.coachPartyId === coach.id) return { assignmentId: record.currentCoachAssignment.id, clientId: record.id };
+    if (record.currentCoachAssignment) await tx.clientCoachAssignment.update({ where: { id: record.currentCoachAssignment.id }, data: { validTo: new Date(from.getTime() - 86400000) } });
+    const assignment = await tx.clientCoachAssignment.create({ data: { tenantId, clientId: record.id, coachPartyId: coach.id, assignedByPartyId: principal.partyId, validFrom: from, reason: input.reason?.trim() || null } });
+    await tx.client.update({ where: { id: record.id }, data: { currentCoachAssignmentId: assignment.id } });
+    return { assignmentId: assignment.id, clientId: record.id };
   });
 }
 

@@ -23,7 +23,7 @@ export class InviteError extends Error {
 
 export type CreateInviteInput = {
   readonly email: string;
-  readonly role: 'Coach' | 'OrgAdmin';
+  readonly role: 'OwnerAdmin' | 'Coach' | 'OrgAdmin';
   readonly scopeType: 'tenant' | 'organization';
   readonly scopeId: string | null;
   readonly baseUrl: string;
@@ -33,7 +33,7 @@ export type CreateInviteInput = {
 export type InviteResult = {
   readonly inviteId: string;
   readonly email: string;
-  readonly role: 'Coach' | 'OrgAdmin';
+  readonly role: 'OwnerAdmin' | 'Coach' | 'OrgAdmin';
   readonly expiresAt: Date;
 };
 
@@ -47,7 +47,7 @@ export type ConsumeInviteInput = {
 export type ConsumedInviteResult = {
   readonly userId: string;
   readonly partyId: string;
-  readonly role: 'Coach' | 'OrgAdmin';
+  readonly role: 'OwnerAdmin' | 'Coach' | 'OrgAdmin';
 };
 
 export async function createInviteForPrincipal(
@@ -129,6 +129,11 @@ export async function consumeInvite(
       throw new InviteError('This invite link is invalid or expired.');
     }
 
+    const existingUser = await tx.user.findUnique({ where: { email: invite.email }, select: { id: true } });
+    if (existingUser) {
+      throw new InviteError('An account already exists for this email. Sign in with that account or use a different invite email.');
+    }
+
     const consumed = await tx.invite.updateMany({
       where: { id: invite.id, tokenHash, consumedAt: null, expiresAt: { gt: now } },
       data: { consumedAt: now },
@@ -136,9 +141,10 @@ export async function consumeInvite(
     if (consumed.count !== 1) {
       throw new InviteError('This invite link is invalid or expired.');
     }
-    if (invite.role !== 'Coach' && invite.role !== 'OrgAdmin') {
+    if (!['OwnerAdmin', 'Coach', 'OrgAdmin'].includes(invite.role)) {
       throw new InviteError('This invite link is invalid or expired.');
     }
+    const role = invite.role as 'OwnerAdmin' | 'Coach' | 'OrgAdmin';
 
     const user = await tx.user.create({
       data: {
@@ -160,12 +166,28 @@ export async function consumeInvite(
       data: {
         tenantId: input.tenantId,
         partyId: party.id,
-        role: invite.role,
+        role,
         scopeType: invite.scopeType,
         scopeId: invite.scopeId,
         validFrom: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())),
       },
     });
+    if (role === 'Coach') {
+      if (!invite.createdBy) throw new InviteError('Coach invite is missing its owner.');
+      const config = await tx.tenantConfig.findUnique({ where: { tenantId: input.tenantId }, select: { defaultCommissionRate: true, defaultCommissionLifespanMonths: true } });
+      if (!config) throw new InviteError('Tenant configuration is missing.');
+      await tx.engagement.create({
+        data: {
+          tenantId: input.tenantId,
+          upstreamPartyId: invite.createdBy,
+          downstreamPartyId: party.id,
+          commissionRate: config.defaultCommissionRate,
+          commissionLifespanMonths: config.defaultCommissionLifespanMonths,
+          validFrom: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())),
+          terms: { source: 'coach_invite' },
+        },
+      });
+    }
     await tx.auditLog.create({
       data: {
         tenantId: input.tenantId,
@@ -178,7 +200,7 @@ export async function consumeInvite(
       },
     });
 
-    return { userId: user.id, partyId: party.id, role: invite.role };
+    return { userId: user.id, partyId: party.id, role };
   });
 }
 
@@ -204,6 +226,9 @@ function validateInviteScope(input: CreateInviteInput): void {
   }
   if (input.scopeType === 'organization' && !input.scopeId) {
     throw new InviteError('Organization invites require an organization scope.');
+  }
+  if (input.role === 'OwnerAdmin' && (input.scopeType !== 'tenant' || input.scopeId !== null)) {
+    throw new InviteError('Owner invites must use the tenant scope.');
   }
   if (input.role === 'OrgAdmin' && (input.scopeType !== 'organization' || !input.scopeId)) {
     throw new InviteError('OrgAdmin invites require an organization scope.');

@@ -1,0 +1,23 @@
+// FitCrew operational dashboard tiles. Pin each query in the Azure workbook.
+
+// Request health
+requests
+| summarize total=count(), failed=countif(success == false), p95=percentile(duration, 95) by bin(timestamp, 5m)
+| order by timestamp asc
+
+// Database and gateway dependency health
+dependencies
+| summarize calls=count(), failed=countif(success == false), p95=percentile(duration, 95) by target, bin(timestamp, 5m)
+| order by timestamp asc
+
+// Access denials: investigate spikes without exposing resource payloads
+customEvents
+| where name == "AccessDenied"
+| summarize denials=count() by tostring(customDimensions.tenantId), tostring(customDimensions.resourceType), bin(timestamp, 15m)
+| order by timestamp desc
+
+// Money operations: amounts are measurements; proof/media and personal data are never emitted
+customEvents
+| where name in ("PaymentConfirmed", "SettlementIssued", "PaymentReversed")
+| summarize operations=count(), amount=sum(todouble(customMeasurements.amountMinor)) by name, tostring(customDimensions.tenantId), bin(timestamp, 1h)
+| order by timestamp desc

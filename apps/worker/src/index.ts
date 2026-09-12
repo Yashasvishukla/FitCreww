@@ -1,5 +1,5 @@
 import pino from 'pino';
-import cron from 'node-cron';
+import { randomUUID } from 'node:crypto';
 import { ConsoleEmailAdapter } from '@fitcrew/application';
 import { acknowledgeEvaluationReminder, computeEvaluationDueEvents, markPendingEvaluationRemindersSent, prisma } from '@fitcrew/db';
 
@@ -12,8 +12,9 @@ import { acknowledgeEvaluationReminder, computeEvaluationDueEvents, markPendingE
 export const logger = pino({ name: 'fitcrew-worker' });
 
 export async function runEvaluationDueJob(asOf = new Date()): Promise<void> {
+  const jobId = randomUUID();
   const emailAdapter = new ConsoleEmailAdapter();
-  const tenants = await prisma.tenant.findMany({ where: { status: { in: ['active', 'trial'] } }, select: { id: true, name: true } });
+  const tenants = await prisma.tenant.findMany({ where: { status: { in: ['active', 'trial'] } }, select: { id: true } });
   for (const tenant of tenants) {
     const due = await computeEvaluationDueEvents(prisma, tenant.id, asOf);
     const reminders = await markPendingEvaluationRemindersSent(prisma, tenant.id, asOf);
@@ -22,18 +23,19 @@ export async function runEvaluationDueJob(asOf = new Date()): Promise<void> {
         await emailAdapter.sendEvaluationReminder({ recipient: reminder.recipient, clientName: reminder.clientName, dueDate: reminder.dueDate });
       }
       await acknowledgeEvaluationReminder(prisma, tenant.id, reminder.reminderId);
-      logger.info({ tenantId: tenant.id, clientName: reminder.clientName, dueDate: reminder.dueDate }, 'EvaluationDue email reminder queued');
+      logger.info({ jobId, tenantId: tenant.id, reminderId: reminder.reminderId, dueDate: reminder.dueDate }, 'EvaluationDue email reminder queued');
     }
-    logger.info({ tenantId: tenant.id, tenantName: tenant.name, ...due, reminders: reminders.length }, 'Evaluation due job completed');
+    logger.info({ jobId, tenantId: tenant.id, ...due, reminders: reminders.length }, 'Evaluation due job completed');
   }
 }
 
 
 export function start(): void {
-  logger.info('FitCrew worker starting with evaluation due scheduler');
-  cron.schedule('*/15 * * * *', () => {
-    runEvaluationDueJob().catch((error) => logger.error({ error }, 'Evaluation due job failed'));
-  });
+  logger.info('FitCrew worker scheduler disabled');
+  // Re-enable the scheduler when evaluation reminders are brought back:
+  // cron.schedule('*/15 * * * *', () => {
+  //   runEvaluationDueJob().catch((error) => logger.error({ error }, 'Evaluation due job failed'));
+  // });
 }
 
 if (process.env.NODE_ENV !== 'test') {

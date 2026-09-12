@@ -3,17 +3,54 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "main": "./src/index.ts",
-  "types": "./src/index.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts",
-    "./identity-access": "./src/identity-access/index.ts",
-    "./network": "./src/network/index.ts",
-    "./client-lifecycle": "./src/client-lifecycle/index.ts",
-    "./money": "./src/money/index.ts",
-    "./media": "./src/media/index.ts",
-    "./platform": "./src/platform/index.ts",
-    "./notifications": "./src/notifications/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./identity-access": {
+      "types": "./dist/identity-access/index.d.ts",
+      "import": "./dist/identity-access/index.js",
+      "default": "./dist/identity-access/index.js"
+    },
+    "./network": {
+      "types": "./dist/network/index.d.ts",
+      "import": "./dist/network/index.js",
+      "default": "./dist/network/index.js"
+    },
+    "./client-lifecycle": {
+      "types": "./dist/client-lifecycle/index.d.ts",
+      "import": "./dist/client-lifecycle/index.js",
+      "default": "./dist/client-lifecycle/index.js"
+    },
+    "./money": {
+      "types": "./dist/money/index.d.ts",
+      "import": "./dist/money/index.js",
+      "default": "./dist/money/index.js"
+    },
+    "./measurement": {
+      "types": "./dist/measurement.d.ts",
+      "import": "./dist/measurement.js",
+      "default": "./dist/measurement.js"
+    },
+    "./media": {
+      "types": "./dist/media/index.d.ts",
+      "import": "./dist/media/index.js",
+      "default": "./dist/media/index.js"
+    },
+    "./platform": {
+      "types": "./dist/platform/index.d.ts",
+      "import": "./dist/platform/index.js",
+      "default": "./dist/platform/index.js"
+    },
+    "./notifications": {
+      "types": "./dist/notifications/index.d.ts",
+      "import": "./dist/notifications/index.js",
+      "default": "./dist/notifications/index.js"
+    }
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

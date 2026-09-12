@@ -1,0 +1,17 @@
+import { describe, expect, it } from 'vitest';
+import { hasRole } from './authorization';
+
+const principal = (role: 'OwnerAdmin' | 'Coach' | 'OrgAdmin' | 'Client', validTo: string | null = null) => ({
+  tenantId: '11111111-1111-4111-8111-111111111111', partyId: '22222222-2222-4222-8222-222222222222',
+  assignments: [{ role, scopeType: role === 'Client' ? 'self' : 'tenant', scopeId: null, validFrom: '2020-01-01', validTo }],
+} as never);
+
+describe('authorization helpers', () => {
+  it('recognizes effective roles and ignores expired assignments', () => {
+    expect(hasRole(principal('OwnerAdmin'), 'OwnerAdmin')).toBe(true);
+    expect(hasRole(principal('Coach', '2020-01-02'), 'Coach')).toBe(false);
+  });
+  it('does not treat one role as another', () => {
+    expect(hasRole(principal('OrgAdmin'), 'OwnerAdmin')).toBe(false);
+  });
+});

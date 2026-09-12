@@ -13,11 +13,15 @@ const schema = z.object({
 export async function POST(request: Request) {
   const session = await auth();
   if (!session?.user?.id) return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 });
-  const parsed = schema.safeParse(await request.json());
+  const parsed = schema.safeParse(await readJson(request));
   if (!parsed.success) return NextResponse.json({ error: 'A valid 7-day plan is required.' }, { status: 400 });
   try {
     return NextResponse.json(await saveWorkoutPlanForUser(prisma, parsed.data.tenantId, session.user.id, parsed.data));
   } catch (error) {
     return NextResponse.json({ error: cleanTrainingOperationsError(error) }, { status: 403 });
   }
+}
+
+async function readJson(request: Request): Promise<unknown> {
+  try { return await request.json(); } catch { return null; }
 }
