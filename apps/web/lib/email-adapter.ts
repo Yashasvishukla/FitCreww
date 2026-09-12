@@ -1,4 +1,4 @@
-import type { EmailAdapter, EvaluationReminderEmail, InviteEmail } from '@fitcrew/application';
+import { ConsoleEmailAdapter, type EmailAdapter, type EvaluationReminderEmail, type InviteEmail } from '@fitcrew/application';
 
 const RESEND_EMAILS_URL = 'https://api.resend.com/emails';
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -43,7 +43,7 @@ export class ResendEmailAdapter implements EmailAdapter {
   }
 
   async sendInvite(email: InviteEmail): Promise<void> {
-    const roleName = email.role === 'Coach' ? 'coach' : 'organization administrator';
+    const roleName = email.role === 'Coach' ? 'coach' : email.role === 'OrgAdmin' ? 'organization administrator' : 'owner administrator';
     const expiry = email.expiresAt.toLocaleString('en-IN', {
       dateStyle: 'medium',
       timeStyle: 'short',
@@ -108,7 +108,17 @@ export class ResendEmailAdapter implements EmailAdapter {
         signal: controller.signal,
       });
 
-      if (!response.ok) throw new EmailDeliveryError();
+      if (!response.ok) {
+        let detail = '';
+        try {
+          const payload = await response.json() as { message?: unknown; error?: { message?: unknown } };
+          const message = payload.error?.message ?? payload.message;
+          if (typeof message === 'string') detail = ` ${message}`;
+        } catch {
+          // Keep the provider response opaque if it is not JSON.
+        }
+        throw new EmailDeliveryError(`Email could not be delivered.${detail}`);
+      }
     } catch (error) {
       if (error instanceof EmailDeliveryError) throw error;
       throw new EmailDeliveryError();
@@ -129,6 +139,14 @@ export function createEmailAdapter(): EmailAdapter {
     from,
     replyTo: process.env.EMAIL_REPLY_TO,
   });
+}
+
+/** Use Resend whenever it is configured, including local end-to-end testing. */
+export function createConfiguredEmailAdapter(): EmailAdapter {
+  if (process.env.EMAIL_DELIVERY_MODE === 'console') return new ConsoleEmailAdapter();
+  if (process.env.RESEND_API_KEY?.trim() && process.env.EMAIL_FROM?.trim()) return createEmailAdapter();
+  if (process.env.NODE_ENV === 'development') return new ConsoleEmailAdapter();
+  throw new EmailConfigurationError();
 }
 
 function escapeHtml(value: string): string {

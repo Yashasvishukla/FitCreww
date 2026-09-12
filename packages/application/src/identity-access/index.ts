@@ -169,7 +169,11 @@ export function scopeQuery(principal: Principal, modelName: string, now = new Da
     return { tenantId: principal.tenantId, id: { in: organizationIds } };
   }
   if (organizationIds.length > 0 && modelName === 'Client') {
-    return { tenantId: principal.tenantId, OR: [{ organizationId: { in: organizationIds } }, ...(coach ? [{ currentCoachAssignment: { coachPartyId: principal.partyId } }] : [])] };
+    // An OrgAdmin view must remain bounded to its organization scope, even
+    // when the same person also has a Coach assignment. Do not union in the
+    // coach's tenant-wide roster, since that would leak clients from other
+    // organizations into the admin's client list.
+    return { tenantId: principal.tenantId, organizationId: { in: organizationIds } };
   }
   if (coach && modelName === 'Client') return { tenantId: principal.tenantId, currentCoachAssignment: { coachPartyId: principal.partyId } };
 

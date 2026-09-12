@@ -61,11 +61,19 @@ export function applyTenantScope(input: {
     return input.args;
   }
 
-  if (input.operation === 'update' || input.operation === 'updateMany') {
+  if (input.operation === 'updateMany') {
     return {
       ...input.args,
       where: scopeWhere(input.args.where, input.tenantId, input.model),
       data: rejectTenantChange(input.args.data, input.tenantId),
+    };
+  }
+
+  if (input.operation === 'update' || input.operation === 'delete') {
+    return {
+      ...input.args,
+      where: scopeUniqueMutationWhere(input.args.where, input.tenantId),
+      ...(input.operation === 'update' ? { data: rejectTenantChange(input.args.data, input.tenantId) } : {}),
     };
   }
 
@@ -93,7 +101,7 @@ export function applyTenantScope(input: {
   if (WRITE_WITH_CREATE_OPERATIONS.has(input.operation)) {
     return {
       ...input.args,
-      where: scopeWhere(input.args.where, input.tenantId, input.model),
+      where: scopeUniqueMutationWhere(input.args.where, input.tenantId),
       create: stampTenantOnData(input.args.create, input.tenantId),
       update: rejectTenantChange(input.args.update, input.tenantId),
     };
@@ -120,6 +128,21 @@ function scopeWhere(where: unknown, tenantId: string, model?: string): QueryArgs
   return {
     AND: [{ ...where }, tenantPredicate],
   };
+}
+
+function scopeUniqueMutationWhere(where: unknown, tenantId: string): QueryArgs {
+  if (!isRecord(where)) {
+    throw new Error('Tenant-scoped unique mutations must use an object where clause.');
+  }
+
+  const existingTenantId = where.tenantId;
+  if (existingTenantId !== undefined && existingTenantId !== tenantId) {
+    throw new Error('Tenant-scoped query attempted to use a different tenantId.');
+  }
+
+  // Prisma unique mutations require their unique field (usually `id`) at the
+  // root of `where`; nesting it in `AND` makes otherwise valid updates fail.
+  return { ...where, tenantId };
 }
 
 function assertUniqueWhereCarriesTenant(where: unknown, tenantId: string): QueryArgs {

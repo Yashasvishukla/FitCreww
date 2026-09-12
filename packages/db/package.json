@@ -26,11 +26,7 @@
     "migrate:check": "prisma validate --schema prisma/schema.prisma",
     "migrate:deploy": "prisma migrate deploy --schema prisma/schema.prisma",
     "migrate:dev": "prisma migrate dev --schema prisma/schema.prisma",
-    "generate": "prisma generate --schema prisma/schema.prisma",
-    "seed": "node prisma/seed.mjs"
-  },
-  "prisma": {
-    "seed": "node prisma/seed.mjs"
+    "generate": "prisma generate --schema prisma/schema.prisma"
   },
   "dependencies": {
     "@azure/storage-blob": "^12.33.0",

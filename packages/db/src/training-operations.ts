@@ -5,6 +5,20 @@ import { withTenant } from './with-tenant.js';
 type Tx = Prisma.TransactionClient;
 type Cadence = 'weekly' | 'biweekly' | 'monthly';
 
+const EXERCISES_BY_CATEGORY = {
+  Chest: ['Barbell Bench Press', 'Incline Barbell Bench Press', 'Decline Barbell Bench Press', 'Dumbbell Bench Press', 'Incline Dumbbell Bench Press', 'Dumbbell Fly', 'Cable Fly', 'Cable Crossover', 'Chest Press Machine', 'Push Up', 'Decline Push Up', 'Dumbbell Pullover'],
+  Back: ['Pull Up', 'Chin Up', 'Assisted Pull Up', 'Lat Pulldown', 'Close Grip Lat Pulldown', 'Barbell Row', 'Pendlay Row', 'Dumbbell Row', 'Chest Supported Row', 'Seated Cable Row', 'T-Bar Row', 'Straight Arm Pulldown', 'Back Extension'],
+  Shoulders: ['Barbell Overhead Press', 'Dumbbell Shoulder Press', 'Arnold Press', 'Dumbbell Lateral Raise', 'Cable Lateral Raise', 'Front Raise', 'Rear Delt Fly', 'Face Pull', 'Upright Row', 'Shrug'],
+  Biceps: ['Barbell Curl', 'EZ Bar Curl', 'Dumbbell Curl', 'Alternating Dumbbell Curl', 'Hammer Curl', 'Incline Dumbbell Curl', 'Preacher Curl', 'Cable Curl', 'Concentration Curl'],
+  Triceps: ['Triceps Pushdown', 'Rope Pushdown', 'Skullcrusher', 'Close Grip Bench Press', 'Overhead Triceps Extension', 'Dumbbell Kickback', 'Bench Dip', 'Parallel Bar Dip'],
+  Legs: ['Back Squat', 'Front Squat', 'Goblet Squat', 'Leg Press', 'Hack Squat', 'Bulgarian Split Squat', 'Walking Lunge', 'Reverse Lunge', 'Step Up', 'Leg Extension', 'Romanian Deadlift', 'Good Morning', 'Leg Curl', 'Seated Leg Curl', 'Hip Thrust', 'Glute Bridge', 'Standing Calf Raise', 'Seated Calf Raise'],
+  Core: ['Plank', 'Side Plank', 'Dead Bug', 'Bird Dog', 'Crunch', 'Cable Crunch', 'Hanging Leg Raise', 'Reverse Crunch', 'Ab Wheel Rollout', 'Russian Twist', 'Pallof Press', 'Mountain Climber'],
+  Cardio: ['Running', 'Treadmill Walk', 'Cycling', 'Stationary Bike', 'Rowing', 'Elliptical', 'Stair Climber', 'Jump Rope', 'Swimming', 'Sled Push'],
+  'Full Body': ['Deadlift', 'Trap Bar Deadlift', 'Power Clean', 'Hang Clean', 'Clean and Press', 'Kettlebell Swing', 'Turkish Get Up', 'Farmer Carry', 'Burpee', 'Thruster', 'Wall Ball', 'Battle Rope'],
+  Mobility: ['Cat Cow', 'World’s Greatest Stretch', 'Hip Flexor Stretch', 'Hamstring Stretch', 'Thoracic Rotation', 'Band Pull Apart', 'Shoulder Dislocate', 'Ankle Dorsiflexion'],
+} as const;
+const DEFAULT_EXERCISES: readonly { name: string; muscleGroup: string }[] = Object.entries(EXERCISES_BY_CATEGORY).flatMap(([muscleGroup, exercises]) => exercises.map((name) => ({ name, muscleGroup })));
+
 export type ExerciseCatalogEntry = {
   id: string;
   name: string;
@@ -13,11 +27,12 @@ export type ExerciseCatalogEntry = {
 };
 
 export type TrainingDashboard = {
+  defaultRestSeconds: number;
   clients: readonly { clientId: string; name: string; coachPartyId: string | null; organizationId: string | null }[];
   exercises: readonly ExerciseCatalogEntry[];
   currentPlan: null | { id: string; version: number; days: readonly PlanDayInput[] };
   planHistory: readonly { id: string; version: number; createdAt: string }[];
-  sessions: readonly { id: string; clientName: string; sessionDate: string; startTime: string; endTime: string | null; exerciseCount: number; notes: string | null }[];
+  sessions: readonly { id: string; clientId: string; clientName: string; sessionDate: string; startTime: string; endTime: string | null; exerciseCount: number; exercises: readonly { name: string; sets?: string; reps?: string }[]; notes: string | null }[];
   dueEvaluations: readonly { id: string; clientId: string; clientName: string; nextDueDate: string; cadence: Cadence }[];
 };
 
@@ -39,6 +54,12 @@ export type TrainingSessionInput = {
   endTime?: string | null;
   exercises: readonly { name: string; sets?: string; reps?: string }[];
   notes?: string;
+};
+
+export type WorkoutDraftInput = {
+  clientId: string;
+  exercises: readonly { id: string; name: string; sets: readonly { id: string; weight: string; reps: string; complete: boolean; note: string }[] }[];
+  activeExerciseId?: string | null;
 };
 
 export type EvaluationScheduleInput = {
@@ -76,7 +97,8 @@ export async function listTrainingDashboardForUser(client: PrismaClient, tenantI
     const clients = await tx.client.findMany({ where: clientWhere, include: { party: true, currentCoachAssignment: true }, orderBy: { party: { displayName: 'asc' } } });
     const visibleClientIds = clients.map((entry) => entry.id);
     const activeClientId = selectedClientId && visibleClientIds.includes(selectedClientId) ? selectedClientId : visibleClientIds[0];
-    const [exercises, currentPlan, planHistory, sessions, dueEvaluations] = await Promise.all([
+    const [user, exercises, currentPlan, planHistory, sessions, dueEvaluations] = await Promise.all([
+      tx.user.findUnique({ where: { id: userId }, select: { defaultRestSeconds: true } }),
       tx.exerciseCatalog.findMany({ where: { OR: [{ tenantId }, { tenantId: null }] }, orderBy: [{ muscleGroup: 'asc' }, { name: 'asc' }] }),
       activeClientId ? tx.workoutPlan.findFirst({ where: { clientId: activeClientId, isCurrent: true }, include: { days: { orderBy: { dayNumber: 'asc' } } } }) : null,
       activeClientId ? tx.workoutPlan.findMany({ where: { clientId: activeClientId }, select: { id: true, version: true, createdAt: true }, orderBy: { version: 'desc' } }) : [],
@@ -84,23 +106,51 @@ export async function listTrainingDashboardForUser(client: PrismaClient, tenantI
       tx.evaluationDueEvent.findMany({ where: { clientId: { in: visibleClientIds }, status: { in: ['pending', 'reminded'] } }, include: { client: { include: { party: true } }, schedule: true }, orderBy: { nextDueDate: 'asc' }, take: 20 }),
     ]);
     return {
+      defaultRestSeconds: user?.defaultRestSeconds ?? 90,
       clients: clients.map((row) => ({ clientId: row.id, name: row.party.displayName, coachPartyId: row.currentCoachAssignment?.coachPartyId ?? null, organizationId: row.organizationId })),
-      exercises: exercises.map((row) => ({ id: row.id, name: row.name, muscleGroup: row.muscleGroup, tenantId: row.tenantId })),
+      exercises: mergeExerciseCatalog(exercises.map((row) => ({ id: row.id, name: row.name, muscleGroup: row.muscleGroup, tenantId: row.tenantId }))),
       currentPlan: currentPlan ? { id: currentPlan.id, version: currentPlan.version, days: currentPlan.days.map((day) => ({ dayNumber: day.dayNumber, exercises: normalizeExerciseList(day.exercises), notes: day.notes ?? undefined })) } : null,
       planHistory: planHistory.map((plan) => ({ id: plan.id, version: plan.version, createdAt: plan.createdAt.toISOString() })),
-      sessions: sessions.map((row) => ({ id: row.id, clientName: row.client.party.displayName, sessionDate: toPlainDate(row.sessionDate), startTime: row.startTime, endTime: row.endTime, exerciseCount: normalizeExerciseList(row.exercisesPerformed).length, notes: row.notes })),
+      sessions: sessions.map((row) => { const performed = normalizeExerciseList(row.exercisesPerformed); return { id: row.id, clientId: row.clientId, clientName: row.client.party.displayName, sessionDate: toPlainDate(row.sessionDate), startTime: row.startTime, endTime: row.endTime, exerciseCount: performed.length, exercises: performed, notes: row.notes }; }),
       dueEvaluations: dueEvaluations.map((row) => ({ id: row.id, clientId: row.clientId, clientName: row.client.party.displayName, nextDueDate: toPlainDate(row.nextDueDate), cadence: row.schedule.cadence })),
     };
   });
 }
 
+export async function saveTrainingRestDefaultForUser(client: PrismaClient, tenantId: string, userId: string, defaultRestSeconds: number) {
+  return withTenant(client as never, tenantId, async (tx: Tx) => {
+    await requirePrincipal(tx, tenantId, userId);
+    const seconds = Math.max(15, Math.min(900, Math.round(defaultRestSeconds / 15) * 15));
+    await tx.user.update({ where: { id: userId }, data: { defaultRestSeconds: seconds } });
+    return { defaultRestSeconds: seconds };
+  });
+}
+
+function mergeExerciseCatalog(exercises: readonly ExerciseCatalogEntry[]): readonly ExerciseCatalogEntry[] {
+  const known = new Set(exercises.map((exercise) => exercise.name.toLocaleLowerCase()));
+  const defaults = DEFAULT_EXERCISES.filter((exercise) => !known.has(exercise.name.toLocaleLowerCase())).map((exercise) => ({ id: `default-${exercise.name.toLocaleLowerCase().replace(/[^a-z0-9]+/g, '-')}`, name: exercise.name, muscleGroup: exercise.muscleGroup, tenantId: null }));
+  return [...exercises, ...defaults].sort((a, b) => (a.muscleGroup ?? '').localeCompare(b.muscleGroup ?? '') || a.name.localeCompare(b.name));
+}
+
 export async function upsertExerciseForUser(client: PrismaClient, tenantId: string, userId: string, input: { name: string; muscleGroup?: string }) {
   return withTenant(client as never, tenantId, async (tx: Tx) => {
-    const principal = await requirePrincipal(tx, tenantId, userId);
-    if (!(await accessGateForPrincipal(tx, principal).can(principal, 'create', { type: 'plan', tenantId }))) throw new TrainingOperationsError('Forbidden.');
+    await requirePrincipal(tx, tenantId, userId);
     const name = requiredText(input.name, 'Exercise name', 120);
     const muscleGroup = input.muscleGroup?.trim() || null;
-    const row = await tx.exerciseCatalog.upsert({ where: { tenantId_name: { tenantId, name } }, update: { muscleGroup }, create: { tenantId, name, muscleGroup, metadata: {} } });
+    const existing = await tx.exerciseCatalog.findFirst({
+      where: { tenantId, name },
+      select: { id: true },
+    });
+    if (existing) {
+      await tx.exerciseCatalog.updateMany({
+        where: { id: existing.id },
+        data: { muscleGroup },
+      });
+      return { exerciseId: existing.id };
+    }
+    const row = await tx.exerciseCatalog.create({
+      data: { tenantId, name, muscleGroup, metadata: {} },
+    });
     return { exerciseId: row.id };
   });
 }
@@ -147,7 +197,31 @@ export async function logTrainingSessionForUser(client: PrismaClient, tenantId: 
         notes: input.notes?.trim() || null,
       },
     });
+    await tx.workoutDraft.deleteMany({ where: { clientId: clientRecord.id } });
     return { sessionId: session.id };
+  });
+}
+
+export async function getWorkoutDraftForUser(client: PrismaClient, tenantId: string, userId: string, clientId: string) {
+  return withTenant(client as never, tenantId, async (tx: Tx) => {
+    await requireVisibleClient(tx, tenantId, userId, clientId, 'session');
+    const draft = await tx.workoutDraft.findUnique({ where: { clientId } });
+    return draft ? { exercises: draft.exercises, activeExerciseId: draft.activeExerciseId, updatedAt: draft.updatedAt.toISOString() } : null;
+  });
+}
+
+export async function saveWorkoutDraftForUser(client: PrismaClient, tenantId: string, userId: string, input: WorkoutDraftInput) {
+  return withTenant(client as never, tenantId, async (tx: Tx) => {
+    await requireVisibleClient(tx, tenantId, userId, input.clientId, 'session');
+    const draft = await tx.workoutDraft.upsert({ where: { clientId: input.clientId }, update: { exercises: input.exercises as Prisma.InputJsonValue, activeExerciseId: input.activeExerciseId ?? null }, create: { tenantId, clientId: input.clientId, exercises: input.exercises as Prisma.InputJsonValue, activeExerciseId: input.activeExerciseId ?? null } });
+    return { updatedAt: draft.updatedAt.toISOString() };
+  });
+}
+
+export async function clearWorkoutDraftForUser(client: PrismaClient, tenantId: string, userId: string, clientId: string) {
+  return withTenant(client as never, tenantId, async (tx: Tx) => {
+    await requireVisibleClient(tx, tenantId, userId, clientId, 'session');
+    await tx.workoutDraft.deleteMany({ where: { clientId } });
   });
 }
 

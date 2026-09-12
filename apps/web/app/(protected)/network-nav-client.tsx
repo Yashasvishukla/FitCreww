@@ -17,12 +17,17 @@ const links: readonly NavLink[] = [
   { href: '/training', label: 'Training', roles: clientFacing },
   { href: '/money', label: 'Money', roles: ownerOnly },
   { href: '/earnings', label: 'Earnings', roles: ['OwnerAdmin', 'Coach'] },
+  { href: '/profile', label: '◉ Account', roles: ['OwnerAdmin', 'Coach', 'OrgAdmin', 'Client'] },
 ];
 
-export function NetworkNavClient({ roles }: { roles: readonly AppRole[] }) {
+export function getVisibleNavLinks(roles: readonly AppRole[]): readonly NavLink[] {
+  return links.filter((link) => link.roles.some((role) => roles.includes(role)));
+}
+
+export function NetworkNavClient({ roles, tenantId }: { roles: readonly AppRole[]; tenantId?: string }) {
   const pathname = usePathname();
   const navRef = useRef<HTMLElement>(null);
-  const visibleLinks = links.filter((link) => link.roles.some((role) => roles.includes(role)));
+  const visibleLinks = getVisibleNavLinks(roles);
 
   useLayoutEffect(() => {
     const nav = navRef.current;
@@ -35,7 +40,8 @@ export function NetworkNavClient({ roles }: { roles: readonly AppRole[] }) {
     <nav className="network-nav" aria-label="Primary navigation" ref={navRef}>
       {visibleLinks.map((link) => {
         const active = pathname === link.href || (link.href !== '/dashboard' && pathname.startsWith(link.href));
-        return <Link aria-current={active ? 'page' : undefined} href={link.href} key={link.href}>{link.label}</Link>;
+        const href = tenantId ? `${link.href}?tenantId=${encodeURIComponent(tenantId)}` : link.href;
+        return <Link aria-current={active ? 'page' : undefined} href={href} key={link.href}>{link.label}</Link>;
       })}
     </nav>
   );

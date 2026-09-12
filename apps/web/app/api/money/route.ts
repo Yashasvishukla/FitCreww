@@ -3,7 +3,7 @@ import { cleanPaymentRecordingError, confirmPaymentForUser, getMoneyWorkspaceFor
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 const tenant = z.string().uuid();
-const method = z.enum(['upi', 'qr', 'phone', 'other']);
+const method = z.enum(['upi', 'qr', 'phone', 'razorpay', 'other']);
 const recordSchema = z.discriminatedUnion('kind', [z.object({ kind: z.literal('client'), tenantId: tenant, subscriptionId: z.string().uuid(), amount: z.union([z.string(), z.number()]), method }), z.object({ kind: z.literal('organization'), tenantId: tenant, organizationId: z.string().uuid(), amount: z.union([z.string(), z.number()]), method })]);
 const confirmSchema = z.object({ tenantId: tenant, paymentId: z.string().uuid(), utr: z.string().optional(), proofMediaAssetId: z.string().uuid().optional() });
 const correctionSchema = confirmSchema.extend({ action: z.literal('reverse'), method });

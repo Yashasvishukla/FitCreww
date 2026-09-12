@@ -153,12 +153,15 @@ export type PaymentConfirmation = {
   readonly proofMediaAssetId: string | null;
 };
 
-export interface PaymentConfirmationSource {
+export interface IPaymentConfirmationSource {
   awaitConfirmation(paymentId: string): Promise<PaymentConfirmation>;
 }
 
+/** Backwards-compatible alias; new adapters should implement the I-prefixed port. */
+export type PaymentConfirmationSource = IPaymentConfirmationSource;
+
 /** MVP adapter. It validates human-supplied evidence but knows nothing about posting. */
-export class ManualConfirmationSource implements PaymentConfirmationSource {
+export class ManualConfirmationSource implements IPaymentConfirmationSource {
   constructor(
     private readonly evidence: { readonly utr?: string | null; readonly proofMediaAssetId?: string | null },
     private readonly clock: () => Date = () => new Date(),

@@ -94,4 +94,20 @@ describe('AccessGate permission matrix', () => {
     expect(createAccessGate().scopeQuery(owner, 'Client')).toEqual({ tenantId });
     expect(createAccessGate().scopeQuery(coach, 'Engagement')).toEqual({ id: { in: [] } });
   });
+
+  it('keeps a coach who is also an OrgAdmin bounded to the admin organization', () => {
+    const orgAdminCoach = {
+      tenantId,
+      partyId: coachId,
+      assignments: [
+        { role: 'OrgAdmin' as const, scopeType: 'organization' as const, scopeId: 'org-1', validFrom: '2026-01-01', validTo: null },
+        { role: 'Coach' as const, scopeType: 'tenant' as const, scopeId: null, validFrom: '2026-01-01', validTo: null },
+      ],
+    };
+
+    expect(createAccessGate().scopeQuery(orgAdminCoach, 'Client')).toEqual({
+      tenantId,
+      organizationId: { in: ['org-1'] },
+    });
+  });
 });
