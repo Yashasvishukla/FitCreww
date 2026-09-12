@@ -1,7 +1,7 @@
-import { ManualConfirmationSource, PercentageWithLifespanWindow, postLedgerEntry, type CommissionResult, type PostLedgerInput } from '@fitcrew/application';
+import { effectiveAssignments, ManualConfirmationSource, PercentageWithLifespanWindow, postLedgerEntry, type CommissionResult, type PostLedgerInput } from '@fitcrew/application';
 import { Money } from '@fitcrew/domain';
 import { Prisma, type PrismaClient } from '@prisma/client';
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { accessGateForPrincipal, resolvePrincipal } from './access-gate.js';
 import { PrismaLedgerRepository } from './ledger.js';
 import { withTenant } from './with-tenant.js';
@@ -61,7 +61,7 @@ export async function recordClientPaymentForUser(client: PrismaClient, tenantId:
     const subscription = await tx.subscription.findFirst({ where: { id: input.subscriptionId }, include: { client: { include: { currentCoachAssignment: true } } } });
     const assignment = subscription?.client.currentCoachAssignment;
     if (!subscription || !assignment || !(await accessGateForPrincipal(tx, principal).can(principal, 'create', { type: 'payment', tenantId, coachPartyId: assignment.coachPartyId, organizationId: subscription.client.organizationId ?? undefined }))) throw new PaymentRecordingError('Forbidden.');
-    const owner = principal.assignments.some((a) => a.role === 'OwnerAdmin')
+    const owner = effectiveAssignments(principal).some((assignment) => assignment.role === 'OwnerAdmin' && assignment.scopeType === 'tenant')
       ? await tx.party.findFirst({ where: { id: principal.partyId, status: 'active' } })
       : (await tx.engagement.findFirst({ where: { downstreamPartyId: assignment.coachPartyId, validTo: null }, include: { upstreamParty: true }, orderBy: { validFrom: 'desc' } }))?.upstreamParty;
     if (!owner) throw new PaymentRecordingError('Tenant owner was not found.');
@@ -105,12 +105,21 @@ export async function createRazorpayOrderForUser(client: PrismaClient, tenantId:
     });
     if (updated.count !== 1) throw new PaymentRecordingError('Payment order was already initialized.');
   });
-  return { keyId: razorpayConfig().keyId, paymentId: pending.id, orderId: order.id, amountMinor: order.amount, currency: order.currency, name: 'FitCrew', description: input.kind === 'client' ? 'Client subscription payment' : 'Organization agreement payment' };
+  return {
+    keyId: razorpayConfig().keyId,
+    paymentId: pending.id,
+    orderId: order.id,
+    amountMinor: order.amount,
+    currency: order.currency,
+    name: 'FitCrew',
+    description: input.kind === 'client' ? 'Client subscription payment' : 'Organization agreement payment',
+    checkoutMode: order.mock ? 'mock' as const : 'live' as const,
+  };
 }
 
 export async function confirmRazorpayPaymentForUser(client: PrismaClient, tenantId: string, userId: string, input: ConfirmRazorpayPaymentInput) {
   return withTenant(client as never, tenantId, async (tx: Tx) => {
-    const principal = await requirePrincipal(tx, tenantId, userId);
+    const principal = await requireOwner(tx, tenantId, userId);
     const payment = await tx.paymentRecord.findFirst({ where: { id: input.paymentId, gatewayProvider: 'razorpay', gatewayOrderId: input.razorpayOrderId }, include: { subscription: { include: { client: { include: { currentCoachAssignment: true } } } } } });
     if (!payment || payment.status !== 'pending') throw new PaymentRecordingError('Razorpay payment is unavailable for confirmation.');
     verifyRazorpaySignature(input);
@@ -130,9 +139,9 @@ export async function confirmRazorpayPaymentForUser(client: PrismaClient, tenant
 
 export async function confirmPaymentForUser(client: PrismaClient, tenantId: string, userId: string, input: ConfirmPaymentInput) {
   return withTenant(client as never, tenantId, async (tx: Tx) => {
-    const principal = await requirePrincipal(tx, tenantId, userId);
+    const principal = await requireOwner(tx, tenantId, userId);
     const payment = await tx.paymentRecord.findFirst({ where: { id: input.paymentId }, include: { subscription: { include: { client: { include: { currentCoachAssignment: true } } } } } });
-    if (!payment || payment.gatewayProvider === 'razorpay') throw new PaymentRecordingError('Payment is unavailable for manual confirmation.');
+    if (!payment) throw new PaymentRecordingError('Payment is unavailable for manual confirmation.');
     const confirmation = await new ManualConfirmationSource(input).awaitConfirmation(payment.id);
     if (confirmation.proofMediaAssetId) {
       const proof = await tx.mediaAsset.findFirst({ where: { id: confirmation.proofMediaAssetId, status: 'active' } });
@@ -183,7 +192,7 @@ export async function updateRefundClawbackRateForUser(client: PrismaClient, tena
 export async function getMoneyWorkspaceForUser(client: PrismaClient, tenantId: string, userId: string) {
   return withTenant(client as never, tenantId, async (tx: Tx) => {
     const principal = await requirePrincipal(tx, tenantId, userId);
-    const ownerAccess = principal.assignments.some((a) => a.role === 'OwnerAdmin');
+    const ownerAccess = effectiveAssignments(principal).some((assignment) => assignment.role === 'OwnerAdmin' && assignment.scopeType === 'tenant');
     const owner = ownerAccess
       ? await tx.party.findFirst({ where: { id: principal.partyId } })
       : (await tx.engagement.findFirst({ where: { downstreamPartyId: principal.partyId, validTo: null }, include: { upstreamParty: true }, orderBy: { validFrom: 'desc' } }))?.upstreamParty;
@@ -191,12 +200,22 @@ export async function getMoneyWorkspaceForUser(client: PrismaClient, tenantId: s
     const paymentWhere = ownerAccess ? { tenantId } : { tenantId, subscription: { client: { currentCoachAssignment: { coachPartyId: principal.partyId } } } };
     const [handles, payments, subscriptions, organizations, config] = await Promise.all([
       tx.payoutHandle.findMany({ where: ownerAccess ? { tenantId } : { tenantId, partyId: { in: [owner.id, principal.partyId] } }, include: { party: true }, orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }] }),
-      tx.paymentRecord.findMany({ where: paymentWhere, include: { payer: true, payee: true, commissionAccruals: true, subscription: { include: { client: { include: { party: true } } } } }, orderBy: { createdAt: 'desc' }, take: 100 }),
-      tx.subscription.findMany({ where: ownerAccess ? { tenantId, status: 'active' } : { tenantId, status: 'active', client: { currentCoachAssignment: { coachPartyId: principal.partyId } } }, include: { client: { include: { party: true } } }, orderBy: { endDate: 'desc' } }),
+      tx.paymentRecord.findMany({ where: paymentWhere, include: { payer: { include: { enrolledClients: { include: { currentCoachAssignment: { include: { coachParty: true } } } } } }, payee: true, commissionAccruals: true, subscription: { include: { client: { include: { party: true, currentCoachAssignment: { include: { coachParty: true } } } } } } }, orderBy: { createdAt: 'desc' }, take: 100 }),
+      tx.subscription.findMany({ where: ownerAccess
+        ? { tenantId, status: 'active', payments: { none: { purpose: 'client_subscription', status: { in: ['pending', 'confirmed'] } } } }
+        : { tenantId, status: 'active', client: { currentCoachAssignment: { coachPartyId: principal.partyId } }, payments: { none: { purpose: 'client_subscription', status: { in: ['pending', 'confirmed'] } } } }, include: { client: { include: { party: true, currentCoachAssignment: { include: { coachParty: true } } } } }, orderBy: { endDate: 'desc' } }),
       ownerAccess ? tx.organization.findMany({ where: { tenantId, status: 'active' }, include: { party: true }, orderBy: { createdAt: 'desc' } }) : Promise.resolve([]),
       tx.tenantConfig.findFirstOrThrow({ where: { tenantId } }),
     ]);
-    return { ownerAccess, principalPartyId: principal.partyId, ownerPartyId: owner.id, refundCoachClawbackRate: config.refundCoachClawbackRate.toString(), handles: handles.map((h) => ({ id: h.id, partyId: h.partyId, partyName: h.party.displayName, type: h.type, value: h.value, label: h.label, isDefault: h.isDefault })), payments: payments.map((p) => { const accrual = p.commissionAccruals[0]; return { id: p.id, purpose: p.purpose, reversesPaymentId: p.reversesPaymentId, clientName: p.subscription?.client.party.displayName ?? p.payer.displayName, amount: p.amount.toString(), method: p.method, status: p.status, utr: p.utr, gatewayProvider: p.gatewayProvider, gatewayOrderId: p.gatewayOrderId, createdAt: p.createdAt.toISOString(), confirmedAt: p.confirmedAt?.toISOString() ?? null, accrual: accrual ? { kind: accrual.kind, commissionAmount: accrual.commissionAmount.toString(), coachPayableAmount: accrual.coachPayableAmount.toString(), rateApplied: accrual.rateApplied.toString(), withinLifespan: accrual.withinLifespan, windowEndAt: accrual.windowEndAt.toISOString() } : null }; }), subscriptions: subscriptions.map((s) => ({ id: s.id, clientName: s.client.party.displayName, price: s.price.toString() })), organizations: organizations.map((organization) => ({ id: organization.id, name: organization.party.displayName })) };
+    // A subscription can be collected only once. Once a collection is in progress or
+    // confirmed, keep it out of the coach's collection picker; its payment remains
+    // available in the status/history views. A reversal makes the subscription
+    // collectible again.
+    const collectedSubscriptionIds = new Set(payments
+      .filter((payment) => payment.purpose === 'client_subscription' && payment.status !== 'reversed' && payment.subscriptionId)
+      .map((payment) => payment.subscriptionId));
+
+    return { ownerAccess, principalPartyId: principal.partyId, ownerPartyId: owner.id, refundCoachClawbackRate: config.refundCoachClawbackRate.toString(), handles: handles.map((h) => ({ id: h.id, partyId: h.partyId, partyName: h.party.displayName, type: h.type, value: h.value, label: h.label, isDefault: h.isDefault })), payments: payments.map((p) => { const accrual = p.commissionAccruals[0]; const coachName = p.subscription?.client.currentCoachAssignment?.coachParty.displayName ?? p.payer.enrolledClients[0]?.currentCoachAssignment?.coachParty.displayName ?? (p.purpose === 'coach_payout' ? p.payee.displayName : null); return { id: p.id, purpose: p.purpose, reversesPaymentId: p.reversesPaymentId, clientName: p.subscription?.client.party.displayName ?? p.payer.displayName, coachName, amount: p.amount.toString(), method: p.method, status: p.status, utr: p.utr, gatewayProvider: p.gatewayProvider, gatewayOrderId: p.gatewayOrderId, createdAt: p.createdAt.toISOString(), confirmedAt: p.confirmedAt?.toISOString() ?? null, accrual: accrual ? { kind: accrual.kind, commissionAmount: accrual.commissionAmount.toString(), coachPayableAmount: accrual.coachPayableAmount.toString(), rateApplied: accrual.rateApplied.toString(), withinLifespan: accrual.withinLifespan, windowEndAt: accrual.windowEndAt.toISOString() } : null }; }), subscriptions: subscriptions.filter((subscription) => !collectedSubscriptionIds.has(subscription.id)).map((s) => ({ id: s.id, clientName: s.client.party.displayName, coachName: s.client.currentCoachAssignment?.coachParty.displayName ?? null, price: s.price.toString() })), organizations: organizations.map((organization) => ({ id: organization.id, name: organization.party.displayName })) };
   });
 }
 
@@ -206,7 +225,7 @@ async function confirmPaymentTx(tx: Tx, tenantId: string, principal: Awaited<Ret
   const subscription = payment.subscription;
   const assignment = subscription?.client.currentCoachAssignment;
   const isOrganizationPayment = payment.purpose === 'org_agreement' && payment.organizationId !== null;
-  const allowed = payment.status === 'pending' && ((subscription && assignment && await accessGateForPrincipal(tx, principal).can(principal, 'update', { type: 'payment', id: payment.id, tenantId, coachPartyId: assignment.coachPartyId, organizationId: subscription.client.organizationId ?? undefined })) || (isOrganizationPayment && principal.assignments.some((a) => a.role === 'OwnerAdmin')));
+  const allowed = payment.status === 'pending' && effectiveAssignments(principal).some((assignment) => assignment.role === 'OwnerAdmin' && assignment.scopeType === 'tenant');
   if (!allowed) throw new PaymentRecordingError('Payment is unavailable for confirmation.');
   const updated = await tx.paymentRecord.updateMany({ where: { id: payment.id, status: 'pending' }, data: { status: 'confirmed', utr: confirmation.utr, proofMediaAssetId: confirmation.proofMediaAssetId, confirmationSource: confirmation.source, confirmedByPartyId: principal.partyId, confirmedAt: confirmation.confirmedAt, ...gateway } });
   if (updated.count !== 1) throw new PaymentRecordingError('Payment was already confirmed.');
@@ -232,8 +251,16 @@ function decimalRateToBasisPoints(value: string): number { const [major, fractio
 function minorUnitsToAmount(value: bigint): string { return `${value / 100n}.${(value % 100n).toString().padStart(2, '0')}`; }
 function amountSigned(value: bigint): string { const sign = value < 0n ? '-' : ''; const absolute = value < 0n ? -value : value; return `${sign}${absolute / 100n}.${(absolute % 100n).toString().padStart(2, '0')}`; }
 function divideRoundHalfUp(numerator: bigint, denominator: bigint): bigint { return (numerator + denominator / 2n) / denominator; }
-function razorpayConfig() { const keyId = process.env.RAZORPAY_KEY_ID?.trim(); const keySecret = process.env.RAZORPAY_KEY_SECRET?.trim(); if (!keyId || !keySecret) throw new PaymentRecordingError('Razorpay credentials are not configured.'); return { keyId, keySecret }; }
-async function createRazorpayOrder(input: { paymentId: string; amountMinor: bigint; tenantId: string }): Promise<{ id: string; amount: number; currency: 'INR' }> {
+const LOCAL_MOCK_RAZORPAY_SECRET = 'fitcrew-local-mock-checkout-only';
+function localMockCheckoutEnabled() { return process.env.NODE_ENV === 'development' && process.env.PAYMENT_GATEWAY_MODE === 'mock'; }
+function razorpayConfig() {
+  if (localMockCheckoutEnabled()) return { keyId: 'rzp_test_fitcrew_local_mock', keySecret: LOCAL_MOCK_RAZORPAY_SECRET };
+  const keyId = process.env.RAZORPAY_KEY_ID?.trim(); const keySecret = process.env.RAZORPAY_KEY_SECRET?.trim();
+  if (!keyId || !keySecret) throw new PaymentRecordingError('Razorpay credentials are not configured.');
+  return { keyId, keySecret };
+}
+async function createRazorpayOrder(input: { paymentId: string; amountMinor: bigint; tenantId: string }): Promise<{ id: string; amount: number; currency: 'INR'; mock: boolean }> {
+  if (localMockCheckoutEnabled()) return { id: `order_mock_${randomUUID().replaceAll('-', '')}`, amount: Number(input.amountMinor), currency: 'INR', mock: true };
   const { keyId, keySecret } = razorpayConfig();
   const response = await fetch('https://api.razorpay.com/v1/orders', {
     method: 'POST',
@@ -245,14 +272,15 @@ async function createRazorpayOrder(input: { paymentId: string; amountMinor: bigi
   });
   const body = await response.json().catch(() => null) as { id?: string; amount?: number; currency?: string; error?: { description?: string } } | null;
   if (!response.ok || !body?.id || body.currency !== 'INR' || typeof body.amount !== 'number') throw new PaymentRecordingError(body?.error?.description ?? 'Razorpay order could not be created.');
-  return { id: body.id, amount: body.amount, currency: 'INR' };
+  return { id: body.id, amount: body.amount, currency: 'INR', mock: false };
 }
 function verifyRazorpaySignature(input: ConfirmRazorpayPaymentInput) {
-  const expected = createHmac('sha256', razorpayConfig().keySecret).update(`${input.razorpayOrderId}|${input.razorpayPaymentId}`).digest('hex');
+  const expected = paymentSignature(input.razorpayOrderId, input.razorpayPaymentId);
   const expectedBytes = Buffer.from(expected, 'hex');
   const actualBytes = Buffer.from(input.razorpaySignature, 'hex');
   if (expectedBytes.length !== actualBytes.length || !timingSafeEqual(expectedBytes, actualBytes)) throw new PaymentRecordingError('Razorpay payment signature is invalid.');
 }
+function paymentSignature(orderId: string, paymentId: string) { return createHmac('sha256', razorpayConfig().keySecret).update(`${orderId}|${paymentId}`).digest('hex'); }
 async function validateProof(tx: Tx, proofMediaAssetId: string | null) { if (proofMediaAssetId && !(await tx.mediaAsset.findFirst({ where: { id: proofMediaAssetId, status: 'active' } }))) throw new PaymentRecordingError('Payment proof was not found.'); }
 async function accrueCommission(tx: Tx, tenantId: string, paymentId: string, ownerPartyId: string, clientId: string, assignmentId: string, coachPartyId: string, grossAmountMinor: bigint, confirmedAt: Date): Promise<CommissionResult | null> {
   if (ownerPartyId === coachPartyId) return null;
@@ -266,6 +294,6 @@ async function accrueCommission(tx: Tx, tenantId: string, paymentId: string, own
   return result;
 }
 async function requirePrincipal(tx: Tx, tenantId: string, userId: string) { const principal = await resolvePrincipal(tx, tenantId, userId); if (!principal) throw new PaymentRecordingError('Forbidden.'); return principal; }
-async function requireOwner(tx: Tx, tenantId: string, userId: string) { const principal = await requirePrincipal(tx, tenantId, userId); if (!principal.assignments.some((a) => a.role === 'OwnerAdmin')) throw new PaymentRecordingError('Forbidden.'); return principal; }
+async function requireOwner(tx: Tx, tenantId: string, userId: string) { const principal = await requirePrincipal(tx, tenantId, userId); if (!effectiveAssignments(principal).some((assignment) => assignment.role === 'OwnerAdmin' && assignment.scopeType === 'tenant')) throw new PaymentRecordingError('Forbidden.'); return principal; }
 async function audit(tx: Tx, tenantId: string, actorPartyId: string, action: string, resourceType: string, resourceId: string, after: object) { await tx.auditLog.create({ data: { tenantId, actorPartyId, action, resourceType, resourceId, before: Prisma.JsonNull, after } }); }
 export function cleanPaymentRecordingError(error: unknown): string { return error instanceof PaymentRecordingError || error instanceof Error && error.name === 'LedgerInvariantError' ? error.message : 'Payment operation failed.'; }

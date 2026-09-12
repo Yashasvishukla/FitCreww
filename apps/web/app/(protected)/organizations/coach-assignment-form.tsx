@@ -33,7 +33,7 @@ export function OrganizationCoachAssignmentForm({ tenantId, organizationId, coac
   }
   const isUnavailable = coaches.length === 0;
   return <form className="organization-assignment-form" onSubmit={submit}>
-    <label><span>Assign coach</span><select name="coachPartyId" required defaultValue="" disabled={isUnavailable}><option value="" disabled>{isUnavailable ? 'All coaches assigned' : 'Select coach'}</option>{coaches.map((coach) => <option key={coach.partyId} value={coach.partyId}>{coach.displayName}</option>)}</select></label>
+    <label><span>Assign coach</span><select name="coachPartyId" required defaultValue="" disabled={isUnavailable}><option value="" disabled>{isUnavailable ? 'No coaches left' : 'Select coach'}</option>{coaches.map((coach) => <option key={coach.partyId} value={coach.partyId}>{coach.displayName}</option>)}</select></label>
     <button className="secondary-button" type="submit" disabled={state === 'submitting' || isUnavailable} data-state={state} aria-busy={state === 'submitting'}>{state === 'submitting' ? 'Assigning' : 'Assign'}</button>
     {state === 'failed' ? <span className="organization-assignment-status" role="status">{error}</span> : null}
   </form>;

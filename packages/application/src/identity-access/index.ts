@@ -120,16 +120,18 @@ export function canAccess(
     }
 
     if (assignment.role === 'Coach' && (assignment.scopeType === 'tenant' || assignment.scopeType === 'organization')) {
+      if (resource.type === 'payment' && action !== 'create') return false;
       return COACH_RESOURCES.has(resource.type)
         && resource.coachPartyId === principal.partyId
         && (assignment.scopeType === 'tenant' || assignment.scopeId === resource.organizationId);
     }
 
     if (assignment.role === 'OrgAdmin' && assignment.scopeType === 'organization') {
-      return (action === 'read' || action === 'create' || action === 'update')
-        && (resource.type === 'organization' || resource.type === 'client' || resource.type === 'session' || resource.type === 'plan'
-          || resource.type === 'evaluation' || resource.type === 'photo')
-        && (resource.organizationId ?? resource.id) === assignment.scopeId;
+      const belongsToOrganization = (resource.organizationId ?? resource.id) === assignment.scopeId;
+      const canRead = resource.type === 'organization' || resource.type === 'client' || resource.type === 'session'
+        || resource.type === 'plan' || resource.type === 'evaluation';
+      const canManageMember = resource.type === 'client' && (action === 'create' || action === 'update');
+      return belongsToOrganization && ((action === 'read' && canRead) || canManageMember);
     }
 
     if (assignment.role === 'Client' && assignment.scopeType === 'self') {

@@ -1,15 +1,9 @@
 import { auth } from '@/auth';
 import { listCoachRosterForUser } from '@fitcrew/db';
-import { CoachTermsForm } from './terms-form';
 import { CoachInviteForm } from './invite-form';
 import { NetworkNav } from '../network-nav';
 import { DEMO_TENANT_ID, requireFeature } from '@/lib/authorization';
-
-function getInitials(name: string) {
-  const words = name.trim().split(/\s+/).filter(Boolean);
-  if (words.length === 0) return 'FC';
-  return words.slice(0, 2).map((word) => word[0]?.toUpperCase()).join('');
-}
+import { CoachList } from './coach-list';
 
 export default async function CoachesPage({ searchParams }: { searchParams: { tenantId?: string } }) {
   const session = await auth();
@@ -24,7 +18,7 @@ export default async function CoachesPage({ searchParams }: { searchParams: { te
       <NetworkNav tenantId={tenantId} />
       <header className="coaches-hero">
         <div>
-          <p className="eyebrow">Network / roster</p>
+          <p className="eyebrow">Coaches</p>
           <h1>Coaches</h1>
           <p>Invite coaches, tune commission terms, and keep every relationship ready for clean payouts.</p>
         </div>
@@ -51,24 +45,7 @@ export default async function CoachesPage({ searchParams }: { searchParams: { te
               <p>Add your first coach to start managing commercial terms from one place.</p>
             </div>
           ) : (
-            <div className="coach-list">
-              {coaches.map((coach) => (
-                <article className="coach-card" key={coach.engagementId}>
-                  <div className="coach-identity">
-                    <span className="coach-avatar" aria-hidden="true">{getInitials(coach.displayName)}</span>
-                    <div>
-                      <h3>{coach.displayName}</h3>
-                      <p>{coach.email ?? 'No email'}</p>
-                    </div>
-                  </div>
-                  <div className="coach-meta">
-                    <span>Active from</span>
-                    <strong>{coach.validFrom}</strong>
-                  </div>
-                  <CoachTermsForm tenantId={tenantId} engagementId={coach.engagementId} rate={coach.commissionRate} lifespan={coach.commissionLifespanMonths} />
-                </article>
-              ))}
-            </div>
+            <CoachList tenantId={tenantId} coaches={coaches} />
           )}
         </section>
         <aside className="surface coach-invite-panel">
