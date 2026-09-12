@@ -46,7 +46,10 @@ export async function enrollClientForUser(client: PrismaClient, tenantId: string
     const party = await tx.party.create({ data: { tenantId, kind: 'person', displayName: name, status: 'active', userId: user?.id ?? null } });
     const clientRecord = await tx.client.create({ data: { tenantId, partyId: party.id, organizationId, enrolledByPartyId: principal.partyId, customPrice: price.toString(), schedule: input.schedule as Prisma.InputJsonValue, photoConsent: input.photoConsent, photoConsentAt: input.photoConsent ? new Date() : null, workflowState: 'enrollment' } });
     const assignment = await tx.clientCoachAssignment.create({ data: { tenantId, clientId: clientRecord.id, coachPartyId: input.coachPartyId, assignedByPartyId: principal.partyId, validFrom: today() } });
-    if (user) await tx.roleAssignment.create({ data: { tenantId, partyId: party.id, role: 'Client', scopeType: 'self', scopeId: null, validFrom: today() } });
+    if (user) {
+      await tx.roleAssignment.create({ data: { tenantId, partyId: party.id, role: 'Client', scopeType: 'self', scopeId: null, validFrom: today() } });
+      await tx.userTenantMembership.create({ data: { userId: user.id, tenantId } });
+    }
     await tx.client.updateMany({ where: { id: clientRecord.id }, data: { currentCoachAssignmentId: assignment.id } });
     if (input.photoConsent) await tx.consentRecord.create({ data: { tenantId, clientId: clientRecord.id, purpose: 'progress_photo', policyVersion: 'v1', state: 'granted', capturedByPartyId: principal.partyId, captureSource: 'enrollment', capturedAt: new Date() } });
     const endDate = addMonths(today(), input.subscriptionDurationMonths);

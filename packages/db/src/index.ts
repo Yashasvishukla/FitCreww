@@ -55,6 +55,8 @@ export { cleanOrgDashboardError, getOrgDashboardForUser, OrgDashboardError } fro
 export { cleanPlatformProvisioningError, listPlatformTenants, PlatformProvisioningError, provisionTenant } from './platform.js';
 export type { ProvisionTenantInput, ProvisionTenantResult } from './platform.js';
 export { prisma } from './prisma.js';
+export { listActiveWorkspacesForUser } from './workspace-membership.js';
+export type { ActiveWorkspace } from './workspace-membership.js';
 export { TENANT_SCOPED_MODELS, applyTenantScope, assertTenantId, tenantScoping } from './tenant-scoping.js';
 export type { TenantScopingOptions } from './tenant-scoping.js';
 export { withTenant } from './with-tenant.js';

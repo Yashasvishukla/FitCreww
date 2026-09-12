@@ -54,6 +54,7 @@ model Tenant {
   settlements           Settlement[]
   payslips              Payslip[]
   platformSubscriptions PlatformSubscription[]
+  userMemberships       UserTenantMembership[]
   planId                String?                 @map("plan_id") @db.Uuid
   plan                  PlatformPlan?           @relation(fields: [planId], references: [id])
 
@@ -112,8 +113,22 @@ model User {
   accounts Account[]
   sessions Session[]
   parties  Party[]
+  tenantMemberships UserTenantMembership[]
 
   @@map("user_account")
+  @@schema("platform")
+}
+
+model UserTenantMembership {
+  userId   String @map("user_id") @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@id([userId, tenantId])
+  @@index([tenantId])
+  @@map("user_tenant_membership")
   @@schema("platform")
 }
 

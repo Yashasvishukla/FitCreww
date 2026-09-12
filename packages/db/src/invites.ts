@@ -172,6 +172,7 @@ export async function consumeInvite(
         validFrom: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())),
       },
     });
+    await tx.userTenantMembership.create({ data: { userId: user.id, tenantId: input.tenantId } });
     if (role === 'Coach') {
       if (!invite.createdBy) throw new InviteError('Coach invite is missing its owner.');
       const config = await tx.tenantConfig.findUnique({ where: { tenantId: input.tenantId }, select: { defaultCommissionRate: true, defaultCommissionLifespanMonths: true } });

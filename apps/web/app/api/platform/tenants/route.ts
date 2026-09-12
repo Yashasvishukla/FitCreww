@@ -2,6 +2,7 @@ import { cleanPlatformProvisioningError, listPlatformTenants, prisma, provisionT
 import { ConsoleEmailAdapter } from '@fitcrew/application';
 import { auth } from '@/auth';
 import { createConfiguredEmailAdapter, EmailConfigurationError, EmailDeliveryError } from '@/lib/email-adapter';
+import { resolveInviteBaseUrl } from '@/lib/invite-base-url';
 import { isPlatformOperator } from '@/lib/platform-operator';
 import { trackServerEvent } from '@/lib/telemetry';
 import { NextResponse } from 'next/server';
@@ -24,8 +25,8 @@ export async function POST(request: Request) {
   if (!isPlatformOperator(session)) return NextResponse.json({ error: 'Forbidden.' }, { status: 403 });
   const parsed = schema.safeParse(await readJson(request));
   if (!parsed.success) return NextResponse.json({ error: 'Tenant name and owner details are required.' }, { status: 400 });
-  const baseUrl = process.env.APP_BASE_URL ?? (process.env.NODE_ENV === 'development' ? new URL(request.url).origin : null);
-  if (!baseUrl) return NextResponse.json({ error: 'Invite delivery is not configured.' }, { status: 503 });
+  const baseUrl = resolveInviteBaseUrl(request.url);
+  if (!baseUrl) return NextResponse.json({ error: 'Invite links require APP_BASE_URL or a Vercel deployment URL.' }, { status: 503 });
   try {
     const result = await provisionTenant(prisma, { ...parsed.data, baseUrl });
     const emailAdapter = createConfiguredEmailAdapter();

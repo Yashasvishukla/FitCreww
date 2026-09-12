@@ -47,6 +47,11 @@ try {
       update: { displayName, status: 'active', contact: { email } },
       select: { id: true },
     });
+    await tx.userTenantMembership.upsert({
+      where: { userId_tenantId: { userId: user.id, tenantId } },
+      create: { userId: user.id, tenantId },
+      update: {},
+    });
 
     const activeOwnerRole = await tx.roleAssignment.findFirst({
       where: { tenantId, partyId: party.id, role: 'OwnerAdmin', scopeType: 'tenant', scopeId: null, validTo: null },
