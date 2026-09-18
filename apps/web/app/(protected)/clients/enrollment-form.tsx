@@ -13,13 +13,25 @@ export function EnrollmentForm({ tenantId, coaches, organizations, organizationR
     const form = event.currentTarget;
     const data = new FormData(form);
     const days = data.getAll('scheduleDay').map(String);
+    const email = data.get('email')?.toString().trim() ?? '';
+    const password = data.get('password')?.toString() ?? '';
     if (!days.length) {
       setError('Select at least one training day.');
       setState('failed');
       return;
     }
+    if ((email || password) && (!email || !password)) {
+      setError('Add both client login email and temporary password, or leave both blank.');
+      setState('failed');
+      return;
+    }
+    if (password && password.length < 12) {
+      setError('Temporary password must be at least 12 characters.');
+      setState('failed');
+      return;
+    }
     try {
-      const response = await fetch('/api/clients', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ tenantId, name: data.get('name'), email: data.get('email') || undefined, password: data.get('password') || undefined, price: data.get('price'), coachPartyId: data.get('coachPartyId'), organizationId: data.get('organizationId') || null, schedule: { days }, photoConsent: data.get('consent') === 'on', subscriptionDurationMonths: Number(data.get('duration')) }) });
+      const response = await fetch('/api/clients', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ tenantId, name: data.get('name'), email: email || undefined, password: password || undefined, price: data.get('price'), coachPartyId: data.get('coachPartyId'), organizationId: data.get('organizationId') || null, schedule: { days }, photoConsent: data.get('consent') === 'on', subscriptionDurationMonths: Number(data.get('duration')) }) });
       const result = await response.json() as { error?: string };
       if (!response.ok) {
         setError(result.error ?? 'Enrollment failed.');
@@ -40,7 +52,7 @@ export function EnrollmentForm({ tenantId, coaches, organizations, organizationR
   return <form className="client-enrollment-form" onSubmit={submit}>
     <div className="client-enrollment-basics"><label><span>Client name</span><input name="name" placeholder="Client name" required maxLength={200} autoFocus /></label><label><span>Coach</span><select name="coachPartyId" required defaultValue=""><option value="" disabled>Select a coach</option>{coaches.map((coach) => <option key={coach.id} value={coach.id}>{coach.label}</option>)}</select></label><label><span>Organization <small>{organizationRequired ? 'Required' : 'Optional'}</small></span>{organizationRequired && organizations.length === 1 ? <><input value={organizations[0]?.label ?? ''} readOnly /><input type="hidden" name="organizationId" value={organizations[0]?.id ?? ''} /></> : <select name="organizationId" defaultValue="" required={organizationRequired}><option value="">{organizationRequired ? 'Select an organization' : 'Direct client'}</option>{organizations.map((organization) => <option key={organization.id} value={organization.id}>{organization.label}</option>)}</select>}</label></div>
     <details open><summary>Service setup</summary><div className="client-service-setup"><div className="client-service-financials"><label><span>Price</span><div className="client-price-input"><span>INR</span><input name="price" type="number" min="0" step="0.01" inputMode="decimal" placeholder="0" required /></div></label><label><span>Subscription</span><select name="duration" defaultValue="1">{[1, 3, 6, 12].map((value) => <option key={value} value={value}>{value} month{value === 1 ? '' : 's'}</option>)}</select></label></div><fieldset className="training-days-fieldset"><legend>Training days</legend><div className="training-day-options">{[['Mon', 'Monday'], ['Tue', 'Tuesday'], ['Wed', 'Wednesday'], ['Thu', 'Thursday'], ['Fri', 'Friday'], ['Sat', 'Saturday'], ['Sun', 'Sunday']].map(([value, label]) => <label key={value} className="training-day-option"><input name="scheduleDay" value={value} type="checkbox" defaultChecked={['Mon', 'Wed', 'Fri'].includes(value as string)} /><span>{label}</span></label>)}</div></fieldset></div></details>
-    <details><summary>Client access and consent <small>(optional)</small></summary><div className="form-grid"><label><span>Login email</span><input name="email" type="email" autoComplete="email" /></label><label><span>Temporary password</span><input name="password" type="password" minLength={12} autoComplete="new-password" /></label></div><label className="checkbox-row"><input name="consent" type="checkbox" /> Photo consent granted</label></details>
-    <button className="primary-button" type="submit" disabled={state === 'submitting' || coaches.length === 0} data-state={state} aria-busy={state === 'submitting'}>{state === 'submitting' ? 'Enrolling' : coaches.length === 0 ? 'No coach available' : 'Enroll client'}</button>{state === 'failed' ? <p role="status" className="client-enrollment-status">{error}</p> : null}
+    <details><summary>Client access and consent <small>(optional)</small></summary><p className="muted">Leave login fields blank unless the client should sign in now.</p><div className="form-grid"><label><span>Login email</span><input name="email" type="email" autoComplete="email" /></label><label><span>Temporary password</span><input name="password" type="password" minLength={12} autoComplete="new-password" /></label></div><label className="checkbox-row"><input name="consent" type="checkbox" /> Photo consent granted</label></details>
+    <button className="primary-button" type="submit" disabled={state === 'submitting' || coaches.length === 0} data-state={state} aria-busy={state === 'submitting'}>{state === 'submitting' ? 'Enrolling' : coaches.length === 0 ? 'No coach available' : 'Enroll client'}</button>{state === 'failed' ? <p role="status" className="client-enrollment-status">{error}</p> : null}{state === 'complete' ? <p role="status" className="client-enrollment-status client-enrollment-status-success">Client enrolled. Refreshing roster...</p> : null}
   </form>;
 }

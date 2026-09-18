@@ -32,7 +32,11 @@ export async function POST(request: Request) {
       scopeId: parsed.data.scopeId,
       baseUrl,
     }, emailAdapter);
-    const response = emailAdapter instanceof ConsoleEmailAdapter ? { ...result, devInviteUrl: emailAdapter.sent[0]?.inviteUrl } : result;
+    const response = {
+      ...result,
+      onboardingUrl: result.inviteUrl,
+      ...(emailAdapter instanceof ConsoleEmailAdapter ? { devInviteUrl: emailAdapter.sent[0]?.inviteUrl } : {}),
+    };
     return NextResponse.json(response, { status: 201 });
   } catch (error) {
     if (error instanceof EmailConfigurationError) return NextResponse.json({ error: error.message }, { status: 503 });

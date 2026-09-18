@@ -27,8 +27,8 @@ export {
   NetworkManagementError,
 } from './network-management.js';
 export type { CoachRosterEntry, CoachTermsInput, OrganizationInput, OrganizationCoachInput } from './network-management.js';
-export { cleanClientLifecycleError, enrollClientForUser, estimateFoodNutrition, estimateFoodNutritionFromBestSource, estimateFoodNutritionFromUsda, reassignClientCoachForUser, recordBaselineForUser, recordEvaluationForUser, listEvaluationsForUser, listNutritionForUser, recordNutritionForUser, recordSatisfactionForUser, getSatisfactionMetricsForUser, ClientLifecycleError } from './client-lifecycle.js';
-export type { BaselineInput, EvaluationInput, NutritionDaySummary, NutritionEstimate, NutritionEstimateSource, NutritionInput, NutritionLogEntry, SatisfactionInput, ClientListEntry, EnrollmentInput, ReassignCoachInput } from './client-lifecycle.js';
+export { cleanClientLifecycleError, enrollClientForUser, estimateFoodNutrition, estimateFoodNutritionFromBestSource, estimateFoodNutritionFromUsda, reassignClientCoachForUser, recordBaselineForUser, recordEvaluationForUser, listEvaluationsForUser, listNutritionForUser, listNutritionCalendarForUser, listNutritionHistoryForUser, listClientPageForUser, getClientForUser, recordNutritionForUser, recordSatisfactionForUser, getSatisfactionMetricsForUser, ClientLifecycleError } from './client-lifecycle.js';
+export type { BaselineInput, EvaluationInput, NutritionDaySummary, NutritionCalendarDay, NutritionEstimate, NutritionEstimateSource, NutritionInput, NutritionLogEntry, SatisfactionInput, ClientListEntry, ClientPage, EnrollmentInput, ReassignCoachInput } from './client-lifecycle.js';
 export { listClientsForUser } from './client-lifecycle.js';
 export {
   cleanTrainingOperationsError,

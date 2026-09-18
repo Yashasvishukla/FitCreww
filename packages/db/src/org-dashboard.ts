@@ -17,7 +17,7 @@ export async function getOrgDashboardForUser(client: PrismaClient, tenantId: str
     const [organizations, clients, sessions, evaluations, schedules, satisfaction, coaches] = await Promise.all([
       tx.organization.findMany({ where: { tenantId, id: { in: organizationIds }, status: 'active' }, include: { party: true }, orderBy: { party: { displayName: 'asc' } } }),
       tx.client.findMany({ where: { tenantId, organizationId: { in: organizationIds }, status: { not: 'left' } }, select: { id: true, organizationId: true, party: { select: { displayName: true } }, currentCoachAssignment: { select: { coachPartyId: true, coachParty: { select: { displayName: true } } } } } }),
-      tx.trainingSession.findMany({ where: { tenantId, client: { organizationId: { in: organizationIds } }, sessionDate: { gte: thirtyDaysAgo, lt: today } }, select: { clientId: true, sessionDate: true } }),
+      tx.trainingSession.findMany({ where: { tenantId, client: { organizationId: { in: organizationIds } }, sessionDate: { gte: thirtyDaysAgo, lte: today } }, select: { clientId: true, sessionDate: true } }),
       tx.evaluation.findMany({ where: { tenantId, client: { organizationId: { in: organizationIds } }, evaluatedAt: { gte: monthStart } }, select: { clientId: true, evaluatedAt: true, type: true, measurements: true } }),
       tx.evaluationSchedule.findMany({ where: { tenantId, client: { organizationId: { in: organizationIds } }, isActive: true, nextDueDate: { lte: today } }, select: { clientId: true, nextDueDate: true } }),
       tx.satisfactionRecord.findMany({ where: { tenantId, client: { organizationId: { in: organizationIds } }, capturedAt: { gte: monthStart } }, select: { clientId: true, score: true } }),

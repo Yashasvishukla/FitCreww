@@ -34,12 +34,7 @@ export default async function DashboardPage({ searchParams }: { searchParams: { 
           <h1>Overview</h1>
           <p className="muted">The decisions and business health signals that matter today.</p>
         </div>
-        <div className="dashboard-header-actions">
-          <Link className="secondary-button" href={`/dashboard/exceptions?tenantId=${encodeURIComponent(tenantId)}`}>Review exceptions</Link>
-          <form action={signOutFromDashboard}>
-            <button className="dashboard-signout" type="submit">Sign out</button>
-          </form>
-        </div>
+        <div className="dashboard-header-actions"><Link className="secondary-button" href={`/dashboard/exceptions?tenantId=${encodeURIComponent(tenantId)}`}>Review exceptions</Link></div>
       </header>
       {session?.user?.id && isTenantOwner(principal) ? <OwnerContent tenantId={tenantId} userId={session.user.id} earningsRange={parseEarningsRange(searchParams.earningsFrom, searchParams.earningsTo)} /> : (
         <AccessFallback

@@ -35,6 +35,7 @@ export type InviteResult = {
   readonly inviteId: string;
   readonly email: string;
   readonly role: 'OwnerAdmin' | 'Coach' | 'OrgAdmin';
+  readonly inviteUrl: string;
   readonly expiresAt: Date;
 };
 
@@ -48,6 +49,7 @@ export type ConsumeInviteInput = {
 export type ConsumedInviteResult = {
   readonly userId: string;
   readonly partyId: string;
+  readonly email: string;
   readonly role: 'OwnerAdmin' | 'Coach' | 'OrgAdmin';
 };
 
@@ -92,14 +94,16 @@ export async function createInviteForPrincipal(
     },
   });
 
+  const inviteUrl = buildInviteUrl(input.baseUrl, principal.tenantId, token);
+
   await emailAdapter.sendInvite({
     recipient: email,
     role: input.role,
-    inviteUrl: buildInviteUrl(input.baseUrl, principal.tenantId, token),
+    inviteUrl,
     expiresAt,
   });
 
-  return { inviteId: invite.id, email, role: input.role, expiresAt };
+  return { inviteId: invite.id, email, role: input.role, inviteUrl, expiresAt };
 }
 
 async function validateInviteOrganizationScope(
@@ -224,7 +228,7 @@ export async function consumeInvite(
       },
     });
 
-    return { userId: user.id, partyId: party.id, role };
+    return { userId: user.id, partyId: party.id, email: user.email, role };
   });
 }
 
