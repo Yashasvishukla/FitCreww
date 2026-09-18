@@ -14,6 +14,7 @@ const links: readonly NavLink[] = [
   { href: '/coaches', label: 'Coaches', roles: ownerOnly },
   { href: '/organizations', label: 'Organizations', roles: ['OwnerAdmin', 'OrgAdmin'] },
   { href: '/clients', label: 'Clients', roles: clientFacing },
+  { href: '/nutrition', label: 'Nutrition', roles: ['OwnerAdmin', 'Coach', 'OrgAdmin', 'Client'] },
   { href: '/training', label: 'Training', roles: clientFacing },
   { href: '/money', label: 'Money', roles: ['OwnerAdmin', 'Coach'] },
   { href: '/earnings', label: 'Earnings', roles: ['OwnerAdmin', 'Coach'] },

@@ -9,9 +9,9 @@ export function requireTenantContext(tenantId: string | undefined): string {
 }
 
 export async function requireFeature(userId: string, tenantId: string, allowedRoles: readonly AppRole[]): Promise<Principal> {
-  const principal = await getPrincipalForUser(prisma, tenantId, userId);
+  const principal = await getPrincipalForUser(prisma, tenantId, userId).catch(() => null);
   if (!principal || !allowedRoles.some((role) => effectiveAssignments(principal).some((assignment) => assignment.role === role))) {
-    redirect(defaultWorkspacePath(principal, tenantId) ?? `/profile?tenantId=${encodeURIComponent(tenantId)}`);
+    redirect(defaultWorkspacePath(principal, tenantId) ?? `/profile?tenantId=${encodeURIComponent(tenantId)}&access=missing`);
   }
   return principal;
 }

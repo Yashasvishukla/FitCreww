@@ -12,7 +12,12 @@ export type ReassignCoachInput = { clientId: string; coachPartyId: string; reaso
 export type BaselineInput = { clientId: string; measurements: Record<string, number>; postureNotes: string; photoAssetIds?: string[] };
 export type EvaluationInput = BaselineInput & { evaluatedAt?: string };
 export type SatisfactionInput = { clientId: string; score: number; comment?: string };
+export type NutritionInput = { clientId: string; foodName: string; mealType: 'breakfast' | 'lunch' | 'dinner' | 'snack'; inputSource?: 'text' | 'camera' | 'barcode' | 'manual'; quantityText?: string; servingGrams?: number; loggedAt?: string; notes?: string; photoAssetId?: string; nutrition?: Partial<Pick<NutritionEstimate, 'calories' | 'proteinGrams' | 'carbGrams' | 'fatGrams' | 'fiberGrams' | 'confidence'>> };
 export type ClientListEntry = { clientId: string; name: string; organizationId: string | null; coachPartyId: string | null; status: string; workflowState: string | null; photoConsent: boolean; };
+export type NutritionEstimateSource = 'usda-fdc' | 'fitcrew-local' | 'manual';
+export type NutritionEstimate = { foodName: string; servingGrams: number; calories: number; proteinGrams: number; carbGrams: number; fatGrams: number; fiberGrams: number; confidence: number; matchedFood: string; source: NutritionEstimateSource; sourceId?: string; dataType?: string };
+export type NutritionLogEntry = NutritionEstimate & { id: string; mealType: string; inputSource: string; quantityText: string | null; loggedAt: string; notes: string | null };
+export type NutritionDaySummary = { date: string; totals: { calories: number; proteinGrams: number; carbGrams: number; fatGrams: number; fiberGrams: number }; byMeal: Record<string, { calories: number; count: number }>; entries: NutritionLogEntry[] };
 
 export class ClientLifecycleError extends Error { constructor(message: string) { super(message); this.name = 'ClientLifecycleError'; } }
 
@@ -149,6 +154,48 @@ export async function recordSatisfactionForUser(client: PrismaClient, tenantId: 
   });
 }
 
+export async function recordNutritionForUser(client: PrismaClient, tenantId: string, userId: string, input: NutritionInput) {
+  return withTenant(client as never, tenantId, async (tx: Tx) => {
+    const { principal, clientRecord } = await requireEvaluationClient(tx, tenantId, userId, input.clientId, 'update');
+    const foodName = input.foodName.trim();
+    if (!foodName || foodName.length > 200) throw new ClientLifecycleError('Food name is required.');
+    const servingGrams = input.servingGrams ?? parseServingGrams(input.quantityText) ?? undefined;
+    const estimate = await estimateFoodNutritionFromBestSource(foodName, servingGrams);
+    const usedManualOverride = input.nutrition !== undefined && Object.values(input.nutrition).some((value) => value !== undefined && value !== null);
+    const nutrition = {
+      calories: normalizeInt(input.nutrition?.calories, estimate.calories, 'Calories'),
+      proteinGrams: normalizeMacro(input.nutrition?.proteinGrams, estimate.proteinGrams, 'Protein'),
+      carbGrams: normalizeMacro(input.nutrition?.carbGrams, estimate.carbGrams, 'Carbs'),
+      fatGrams: normalizeMacro(input.nutrition?.fatGrams, estimate.fatGrams, 'Fat'),
+      fiberGrams: normalizeMacro(input.nutrition?.fiberGrams, estimate.fiberGrams, 'Fiber'),
+      confidence: normalizeConfidence(input.nutrition?.confidence ?? estimate.confidence),
+    };
+    if (input.photoAssetId) {
+      const asset = await tx.mediaAsset.findFirst({ where: { id: input.photoAssetId, tenantId, clientId: clientRecord.id, status: 'active' }, select: { id: true } });
+      if (!asset) throw new ClientLifecycleError('Food photo asset is invalid.');
+    }
+    const row = await tx.nutritionLog.create({ data: { tenantId, clientId: clientRecord.id, capturedByPartyId: principal.partyId, photoAssetId: input.photoAssetId ?? null, mealType: input.mealType, inputSource: input.inputSource ?? (usedManualOverride ? 'manual' : 'text'), foodName, quantityText: input.quantityText?.trim() || null, servingGrams: servingGrams ?? estimate.servingGrams, calories: nutrition.calories, proteinGrams: nutrition.proteinGrams.toFixed(2), carbGrams: nutrition.carbGrams.toFixed(2), fatGrams: nutrition.fatGrams.toFixed(2), fiberGrams: nutrition.fiberGrams.toFixed(2), confidence: nutrition.confidence.toFixed(2), loggedAt: input.loggedAt ? parseDateTime(input.loggedAt) : new Date(), notes: input.notes?.trim() || null, metadata: { source: usedManualOverride ? 'manual' : estimate.source, upstreamSource: estimate.source, sourceId: estimate.sourceId ?? null, dataType: estimate.dataType ?? null, matchedFood: estimate.matchedFood, requestedServingGrams: servingGrams ?? null } } });
+    return toNutritionEntry(row);
+  });
+}
+
+export async function listNutritionForUser(client: PrismaClient, tenantId: string, userId: string, clientId: string, date = plainToday()): Promise<NutritionDaySummary> {
+  return withTenant(client as never, tenantId, async (tx: Tx) => {
+    const { clientRecord } = await requireEvaluationClient(tx, tenantId, userId, clientId, 'read');
+    const start = parsePlainDate(date);
+    const end = new Date(start.getTime() + 86400000);
+    const rows = await tx.nutritionLog.findMany({ where: { tenantId, clientId: clientRecord.id, loggedAt: { gte: start, lt: end } }, orderBy: { loggedAt: 'desc' } });
+    const entries = rows.map(toNutritionEntry);
+    const totals = entries.reduce((sum, entry) => ({ calories: sum.calories + entry.calories, proteinGrams: sum.proteinGrams + entry.proteinGrams, carbGrams: sum.carbGrams + entry.carbGrams, fatGrams: sum.fatGrams + entry.fatGrams, fiberGrams: sum.fiberGrams + entry.fiberGrams }), { calories: 0, proteinGrams: 0, carbGrams: 0, fatGrams: 0, fiberGrams: 0 });
+    const byMeal = entries.reduce<Record<string, { calories: number; count: number }>>((mealSummary, entry) => {
+      const current = mealSummary[entry.mealType] ?? { calories: 0, count: 0 };
+      mealSummary[entry.mealType] = { calories: current.calories + entry.calories, count: current.count + 1 };
+      return mealSummary;
+    }, {});
+    return { date, totals: roundTotals(totals), byMeal, entries };
+  });
+}
+
 export async function getSatisfactionMetricsForUser(client: PrismaClient, tenantId: string, userId: string) {
   return withTenant(client as never, tenantId, async (tx: Tx) => { const principal = await resolvePrincipal(tx, tenantId, userId); if (!principal || !effectiveAssignments(principal).some((assignment) => assignment.role === 'OwnerAdmin' && assignment.scopeType === 'tenant')) throw new ClientLifecycleError('Forbidden.'); const rows = await tx.satisfactionRecord.findMany({ where: { tenantId }, select: { score: true } }); return { count: rows.length, averageScore: rows.length ? rows.reduce((sum, row) => sum + row.score, 0) / rows.length : null }; });
 }
@@ -171,5 +218,89 @@ async function ensureWorkflow(tx: Tx, tenantId: string): Promise<void> {
 }
 function today(): Date { const now = new Date(); return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())); }
 function addMonths(start: Date, months: number): Date { const end = new Date(start); end.setUTCMonth(end.getUTCMonth() + months); end.setUTCDate(end.getUTCDate() - 1); return end; }
+
+const FOOD_CATALOG = [
+  { names: ['rice', 'white rice', 'cooked rice'], calories: 130, proteinGrams: 2.7, carbGrams: 28.2, fatGrams: 0.3, fiberGrams: 0.4 },
+  { names: ['brown rice'], calories: 123, proteinGrams: 2.7, carbGrams: 25.6, fatGrams: 1, fiberGrams: 1.8 },
+  { names: ['roti', 'chapati'], calories: 297, proteinGrams: 9.8, carbGrams: 46.4, fatGrams: 7.5, fiberGrams: 9.2 },
+  { names: ['dal', 'lentils'], calories: 116, proteinGrams: 9, carbGrams: 20, fatGrams: 0.4, fiberGrams: 7.9 },
+  { names: ['paneer'], calories: 265, proteinGrams: 18.3, carbGrams: 1.2, fatGrams: 20.8, fiberGrams: 0 },
+  { names: ['chicken breast', 'chicken'], calories: 165, proteinGrams: 31, carbGrams: 0, fatGrams: 3.6, fiberGrams: 0 },
+  { names: ['egg', 'eggs'], calories: 155, proteinGrams: 13, carbGrams: 1.1, fatGrams: 11, fiberGrams: 0 },
+  { names: ['oats', 'oatmeal'], calories: 389, proteinGrams: 16.9, carbGrams: 66.3, fatGrams: 6.9, fiberGrams: 10.6 },
+  { names: ['banana'], calories: 89, proteinGrams: 1.1, carbGrams: 22.8, fatGrams: 0.3, fiberGrams: 2.6 },
+  { names: ['apple'], calories: 52, proteinGrams: 0.3, carbGrams: 13.8, fatGrams: 0.2, fiberGrams: 2.4 },
+  { names: ['milk'], calories: 61, proteinGrams: 3.2, carbGrams: 4.8, fatGrams: 3.3, fiberGrams: 0 },
+  { names: ['curd', 'yogurt'], calories: 98, proteinGrams: 3.5, carbGrams: 4.7, fatGrams: 4.3, fiberGrams: 0 },
+  { names: ['poha'], calories: 180, proteinGrams: 3.3, carbGrams: 31, fatGrams: 4.8, fiberGrams: 2.2 },
+  { names: ['idli'], calories: 156, proteinGrams: 4.5, carbGrams: 30, fatGrams: 1, fiberGrams: 2.1 },
+  { names: ['dosa'], calories: 168, proteinGrams: 3.9, carbGrams: 29, fatGrams: 3.7, fiberGrams: 1.1 },
+  { names: ['salad'], calories: 33, proteinGrams: 1.7, carbGrams: 6.5, fatGrams: 0.3, fiberGrams: 2.4 },
+] as const;
+
+export function estimateFoodNutrition(foodName: string, servingGrams = 100): NutritionEstimate {
+  const normalized = foodName.toLowerCase();
+  const match = FOOD_CATALOG.find((item) => item.names.some((name) => normalized.includes(name)));
+  const reference = match ?? { names: ['generic food'], calories: 180, proteinGrams: 6, carbGrams: 22, fatGrams: 6, fiberGrams: 3 };
+  const grams = Number.isInteger(servingGrams) && servingGrams > 0 ? servingGrams : 100;
+  const ratio = grams / 100;
+  return { foodName: foodName.trim(), servingGrams: grams, calories: Math.round(reference.calories * ratio), proteinGrams: roundMacro(reference.proteinGrams * ratio), carbGrams: roundMacro(reference.carbGrams * ratio), fatGrams: roundMacro(reference.fatGrams * ratio), fiberGrams: roundMacro(reference.fiberGrams * ratio), confidence: match ? 0.78 : 0.45, matchedFood: reference.names[0], source: 'fitcrew-local' };
+}
+
+export async function estimateFoodNutritionFromBestSource(foodName: string, servingGrams = 100, environment: NodeJS.ProcessEnv = process.env): Promise<NutritionEstimate> {
+  const usda = await estimateFoodNutritionFromUsda(foodName, servingGrams, environment);
+  return usda ?? estimateFoodNutrition(foodName, servingGrams);
+}
+
+export async function estimateFoodNutritionFromUsda(foodName: string, servingGrams = 100, environment: NodeJS.ProcessEnv = process.env): Promise<NutritionEstimate | null> {
+  const apiKey = environment.USDA_FDC_API_KEY?.trim();
+  if (!apiKey) return null;
+  const grams = Number.isInteger(servingGrams) && servingGrams > 0 ? servingGrams : 100;
+  const url = new URL('https://api.nal.usda.gov/fdc/v1/foods/search');
+  url.searchParams.set('api_key', apiKey);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 4_000);
+  try {
+    const response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: foodName, pageSize: 5, dataType: ['Foundation', 'SR Legacy', 'Survey (FNDDS)', 'Branded'] }), signal: controller.signal });
+    if (!response.ok) return null;
+    const payload = await response.json() as FoodDataSearchResponse;
+    const food = payload.foods?.find((item) => item.foodNutrients?.some((nutrient) => nutrient.nutrientNumber === '208' || nutrient.nutrientId === 1008));
+    if (!food) return null;
+    const per100g = {
+      calories: readUsdaNutrient(food, ['208'], [1008]),
+      proteinGrams: readUsdaNutrient(food, ['203'], [1003]),
+      carbGrams: readUsdaNutrient(food, ['205'], [1005]),
+      fatGrams: readUsdaNutrient(food, ['204'], [1004]),
+      fiberGrams: readUsdaNutrient(food, ['291'], [1079]),
+    };
+    if (per100g.calories === null) return null;
+    const ratio = grams / 100;
+    return { foodName: foodName.trim(), servingGrams: grams, calories: Math.round(per100g.calories * ratio), proteinGrams: roundMacro((per100g.proteinGrams ?? 0) * ratio), carbGrams: roundMacro((per100g.carbGrams ?? 0) * ratio), fatGrams: roundMacro((per100g.fatGrams ?? 0) * ratio), fiberGrams: roundMacro((per100g.fiberGrams ?? 0) * ratio), confidence: 0.9, matchedFood: food.description, source: 'usda-fdc', sourceId: String(food.fdcId), dataType: food.dataType };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+type FoodDataSearchResponse = { foods?: FoodDataSearchFood[] };
+type FoodDataSearchFood = { fdcId: number; description: string; dataType?: string; foodNutrients?: FoodDataNutrient[] };
+type FoodDataNutrient = { nutrientId?: number; nutrientNumber?: string; nutrientName?: string; value?: number };
+
+function readUsdaNutrient(food: FoodDataSearchFood, nutrientNumbers: string[], nutrientIds: number[]): number | null {
+  const nutrient = food.foodNutrients?.find((item) => (item.nutrientNumber && nutrientNumbers.includes(item.nutrientNumber)) || (item.nutrientId !== undefined && nutrientIds.includes(item.nutrientId)));
+  return typeof nutrient?.value === 'number' && Number.isFinite(nutrient.value) ? nutrient.value : null;
+}
+
+function parseServingGrams(value?: string): number | null { const match = value?.match(/(\d{1,4})(?:\.\d+)?\s*(?:g|gram|grams)\b/i); return match ? Number.parseInt(match[1]!, 10) : null; }
+function normalizeInt(value: unknown, fallback: number, label: string): number { if (value === undefined || value === null) return fallback; const parsed = Number(value); if (!Number.isInteger(parsed) || parsed < 0 || parsed > 20_000) throw new ClientLifecycleError(`${label} must be a non-negative whole number.`); return parsed; }
+function normalizeMacro(value: unknown, fallback: number, label: string): number { if (value === undefined || value === null) return fallback; const parsed = Number(value); if (!Number.isFinite(parsed) || parsed < 0 || parsed > 5_000) throw new ClientLifecycleError(`${label} must be a non-negative number.`); return roundMacro(parsed); }
+function normalizeConfidence(value: unknown): number { const parsed = Number(value); if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) throw new ClientLifecycleError('Nutrition confidence must be between 0 and 1.'); return roundMacro(parsed); }
+function toNutritionEntry(row: { id: string; foodName: string; servingGrams: number | null; calories: number; proteinGrams: Prisma.Decimal | null; carbGrams: Prisma.Decimal | null; fatGrams: Prisma.Decimal | null; fiberGrams: Prisma.Decimal | null; confidence: Prisma.Decimal; mealType: string; inputSource: string; quantityText: string | null; loggedAt: Date; notes: string | null; metadata: Prisma.JsonValue }): NutritionLogEntry { const metadata = row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata) ? row.metadata as Record<string, unknown> : {}; return { id: row.id, foodName: row.foodName, servingGrams: row.servingGrams ?? 100, calories: row.calories, proteinGrams: Number(row.proteinGrams ?? 0), carbGrams: Number(row.carbGrams ?? 0), fatGrams: Number(row.fatGrams ?? 0), fiberGrams: Number(row.fiberGrams ?? 0), confidence: Number(row.confidence), matchedFood: String(metadata.matchedFood ?? row.foodName), source: parseNutritionSource(metadata.source), sourceId: typeof metadata.sourceId === 'string' ? metadata.sourceId : undefined, dataType: typeof metadata.dataType === 'string' ? metadata.dataType : undefined, mealType: row.mealType, inputSource: row.inputSource, quantityText: row.quantityText, loggedAt: row.loggedAt.toISOString(), notes: row.notes }; }
+function parseNutritionSource(value: unknown): NutritionEstimateSource { return value === 'usda-fdc' || value === 'manual' || value === 'fitcrew-local' ? value : 'fitcrew-local'; }
+function parsePlainDate(value: string): Date { if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new ClientLifecycleError('Nutrition date is invalid.'); const date = new Date(`${value}T00:00:00.000Z`); if (Number.isNaN(date.getTime())) throw new ClientLifecycleError('Nutrition date is invalid.'); return date; }
+function plainToday(): string { return today().toISOString().slice(0, 10); }
+function roundMacro(value: number): number { return Math.round(value * 10) / 10; }
+function roundTotals<T extends Record<string, number>>(totals: T): T { return Object.fromEntries(Object.entries(totals).map(([key, value]) => [key, roundMacro(value)])) as T; }
 export function cleanClientLifecycleError(error: unknown): string { return error instanceof ClientLifecycleError ? error.message : 'Client lifecycle operation failed.'; }
 export { prisma };

@@ -32,6 +32,7 @@ model Tenant {
   workflowDefinitions   WorkflowDefinition[]
   workflowStages        WorkflowStage[]
   evaluations           Evaluation[]
+  nutritionLogs         NutritionLog[]
   evaluationPhotos      EvaluationPhoto[]
   subscriptions         Subscription[]
   exerciseCatalog       ExerciseCatalog[]
@@ -217,6 +218,7 @@ model Party {
   assignedByAssignments ClientCoachAssignment[] @relation("AssignedBy")
   consentRecords        ConsentRecord[]         @relation("ConsentCapturedBy")
   evaluations           Evaluation[]            @relation("EvaluationBy")
+  nutritionLogs         NutritionLog[]          @relation("NutritionCapturedBy")
   createdWorkoutPlans   WorkoutPlan[]           @relation("WorkoutPlanCreatedBy")
   trainingSessions      TrainingSession[]       @relation("TrainingSessionCoach")
   satisfactionRecords   SatisfactionRecord[]
@@ -326,6 +328,7 @@ model Client {
   subscriptions          Subscription[]
   workoutPlans           WorkoutPlan[]
   trainingSessions       TrainingSession[]
+  nutritionLogs          NutritionLog[]
   workoutDraft           WorkoutDraft?
   evaluationSchedule     EvaluationSchedule?
   evaluationDueEvents    EvaluationDueEvent[]
@@ -401,6 +404,7 @@ model MediaAsset {
   tenant           Tenant            @relation(fields: [tenantId], references: [id])
   client           Client?           @relation(fields: [clientId], references: [id])
   evaluationPhotos EvaluationPhoto[]
+  nutritionLogs    NutritionLog[]
   paymentProofs    PaymentRecord[]
   payslipDocuments Payslip[]
 
@@ -465,6 +469,39 @@ model SatisfactionRecord {
 
   @@index([tenantId, clientId, capturedAt])
   @@map("satisfaction_record")
+  @@schema("public")
+}
+
+model NutritionLog {
+  id                String          @id @default(uuid()) @db.Uuid
+  tenantId          String          @map("tenant_id") @db.Uuid
+  clientId          String          @map("client_id") @db.Uuid
+  capturedByPartyId String          @map("captured_by_party_id") @db.Uuid
+  photoAssetId      String?         @map("photo_asset_id") @db.Uuid
+  mealType          MealType        @map("meal_type")
+  inputSource       FoodInputSource @default(text) @map("input_source")
+  foodName          String          @map("food_name")
+  quantityText      String?         @map("quantity_text")
+  servingGrams      Int?            @map("serving_grams")
+  calories          Int
+  proteinGrams      Decimal?        @map("protein_grams") @db.Decimal(8, 2)
+  carbGrams         Decimal?        @map("carb_grams") @db.Decimal(8, 2)
+  fatGrams          Decimal?        @map("fat_grams") @db.Decimal(8, 2)
+  fiberGrams        Decimal?        @map("fiber_grams") @db.Decimal(8, 2)
+  confidence        Decimal         @default(0.70) @db.Decimal(4, 2)
+  loggedAt          DateTime        @default(now()) @map("logged_at")
+  notes             String?
+  metadata          Json            @default("{}")
+  createdAt         DateTime        @default(now()) @map("created_at")
+
+  tenant     Tenant      @relation(fields: [tenantId], references: [id])
+  client     Client      @relation(fields: [clientId], references: [id])
+  capturedBy Party       @relation("NutritionCapturedBy", fields: [capturedByPartyId], references: [id])
+  photoAsset MediaAsset? @relation(fields: [photoAssetId], references: [id])
+
+  @@index([tenantId, clientId, loggedAt])
+  @@index([tenantId, clientId, mealType])
+  @@map("nutrition_log")
   @@schema("public")
 }
 
@@ -959,6 +996,24 @@ enum FeeBearer {
 enum SatisfactionMode {
   per_session
   periodic
+
+  @@schema("public")
+}
+
+enum MealType {
+  breakfast
+  lunch
+  dinner
+  snack
+
+  @@schema("public")
+}
+
+enum FoodInputSource {
+  text
+  camera
+  barcode
+  manual
 
   @@schema("public")
 }

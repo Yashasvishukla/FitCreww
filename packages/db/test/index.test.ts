@@ -11,6 +11,8 @@ import {
   normalizeEmail,
   verifyPassword,
   withTenant,
+  estimateFoodNutritionFromBestSource,
+  estimateFoodNutritionFromUsda,
 } from '../src/index.js';
 
 const tenantId = '11111111-1111-4111-8111-111111111111';
@@ -38,7 +40,7 @@ describe('credential primitives', () => {
 
 describe('tenant-scoping query rewrite', () => {
   it('documents the current tenant-scoped Prisma models', () => {
-    expect(TENANT_SCOPED_MODELS).toEqual(['TenantConfig', 'Party', 'RoleAssignment', 'Engagement', 'Organization', 'Client', 'ClientCoachAssignment', 'ConsentRecord', 'MediaAsset', 'WorkflowDefinition', 'WorkflowStage', 'Evaluation', 'EvaluationPhoto', 'SatisfactionRecord', 'Subscription', 'ExerciseCatalog', 'WorkoutPlan', 'PlanDay', 'TrainingSession', 'WorkoutDraft', 'EvaluationSchedule', 'EvaluationDueEvent', 'AuditLog', 'Invite', 'LedgerAccount', 'LedgerEntry', 'LedgerLine', 'PayoutHandle', 'PaymentRecord', 'ClientEngagementClock', 'CommissionAccrual', 'Settlement', 'Payslip']);
+    expect(TENANT_SCOPED_MODELS).toEqual(['TenantConfig', 'Party', 'RoleAssignment', 'Engagement', 'Organization', 'Client', 'ClientCoachAssignment', 'ConsentRecord', 'MediaAsset', 'WorkflowDefinition', 'WorkflowStage', 'Evaluation', 'EvaluationPhoto', 'SatisfactionRecord', 'NutritionLog', 'Subscription', 'ExerciseCatalog', 'WorkoutPlan', 'PlanDay', 'TrainingSession', 'WorkoutDraft', 'EvaluationSchedule', 'EvaluationDueEvent', 'AuditLog', 'Invite', 'LedgerAccount', 'LedgerEntry', 'LedgerLine', 'PayoutHandle', 'PaymentRecord', 'ClientEngagementClock', 'CommissionAccrual', 'Settlement', 'Payslip']);
   });
 
   it('adds tenantId to read filters', () => {
@@ -154,6 +156,22 @@ describe('tenant-scoping query rewrite', () => {
         args: { data: { tenantId: otherTenantId } },
       }),
     ).toThrow('different tenantId');
+  });
+});
+
+describe('nutrition estimates', () => {
+  it('uses USDA FoodData Central nutrients when an API key is configured', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(JSON.stringify({ foods: [{ fdcId: 123, description: 'Rice, white, cooked', dataType: 'Survey (FNDDS)', foodNutrients: [{ nutrientId: 1008, nutrientNumber: '208', value: 130 }, { nutrientId: 1003, nutrientNumber: '203', value: 2.7 }, { nutrientId: 1005, nutrientNumber: '205', value: 28.2 }, { nutrientId: 1004, nutrientNumber: '204', value: 0.3 }, { nutrientId: 1079, nutrientNumber: '291', value: 0.4 }] }] }), { status: 200 }) as never;
+    try {
+      await expect(estimateFoodNutritionFromUsda('rice', 150, { USDA_FDC_API_KEY: 'test-key' } as NodeJS.ProcessEnv)).resolves.toMatchObject({ calories: 195, proteinGrams: 4.1, matchedFood: 'Rice, white, cooked', source: 'usda-fdc', sourceId: '123' });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('falls back to the local catalog without an API key', async () => {
+    await expect(estimateFoodNutritionFromBestSource('150g rice', 150, {} as NodeJS.ProcessEnv)).resolves.toMatchObject({ calories: 195, source: 'fitcrew-local' });
   });
 });
 

@@ -5,10 +5,11 @@ import { EnrollmentForm } from './enrollment-form';
 import { NetworkNav } from '../network-nav';
 import { hasRole, requireFeature, requireTenantContext } from '@/lib/authorization';
 import { ClientList } from './client-list';
+import { AccessFallback } from '../access-fallback';
 
 export default async function ClientsPage({ searchParams }: { searchParams: { tenantId?: string } }) {
   const session = await auth(); if (!session?.user?.id) return null; const tenantId = requireTenantContext(searchParams.tenantId);
-  const principal = await getPrincipalForUser(prisma, tenantId, session.user.id);
+  const principal = await getPrincipalForUser(prisma, tenantId, session.user.id).catch(() => null);
   if (principal?.assignments.some((assignment) => assignment.role === 'Client')) {
     const own = await listClientsForUser(prisma, tenantId, session.user.id);
     const client = own[0];
@@ -50,11 +51,11 @@ export default async function ClientsPage({ searchParams }: { searchParams: { te
           <small>{clients.length === 1 ? 'client' : 'clients'} visible</small>
         </div>
       </header>
-      {loadError ? <p className="form-error" role="alert">Client workspace data could not be loaded.</p> : null}
+      {loadError ? <AccessFallback tenantId={tenantId} eyebrow="Clients" title="Client workspace could not be loaded" message="Your account is signed in, but the client roster for this scope is unavailable. Ask an administrator to verify your coach or organization assignment." primaryHref="/dashboard" primaryLabel="Go to workspace" /> : null}
       <div className="clients-layout">
         <section className="surface clients-list-panel">
           <div className="section-heading"><div><p className="eyebrow">Roster</p><h2>Visible clients</h2></div><span className="count-label">{clients.length} active</span></div>
-          {clients.length === 0 ? <div className="client-empty-state"><strong>No clients in this scope.</strong><p>Enroll a client to begin their intake, training, and progress journey.</p></div> : (
+          {clients.length === 0 ? <div className="client-empty-state"><strong>No clients visible in this scope.</strong><p>{organizationAdmin ? 'This organization does not have visible clients yet, or your organization assignment has not been connected to client records.' : 'Enroll a client to begin their intake, training, and progress journey.'}</p></div> : (
             <ClientList tenantId={tenantId} clients={clients} />
           )}
         </section>

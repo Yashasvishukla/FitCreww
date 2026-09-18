@@ -4,6 +4,7 @@ import { CoachInviteForm } from './invite-form';
 import { NetworkNav } from '../network-nav';
 import { requireFeature, requireTenantContext } from '@/lib/authorization';
 import { CoachList } from './coach-list';
+import { AccessFallback } from '../access-fallback';
 
 export default async function CoachesPage({ searchParams }: { searchParams: { tenantId?: string } }) {
   const session = await auth();
@@ -38,7 +39,7 @@ export default async function CoachesPage({ searchParams }: { searchParams: { te
             <span className="count-label">{coaches.length} active</span>
           </div>
           {loadError ? (
-            <p className="form-error" role="alert">The roster could not be loaded.</p>
+            <AccessFallback tenantId={tenantId} eyebrow="Coaches" title="Coach roster could not be loaded" message="The workspace is open, but coach data is unavailable right now. Try again, or check that your owner access is still active." primaryHref="/coaches" primaryLabel="Try again" embedded />
           ) : coaches.length === 0 ? (
             <div className="coach-empty-state">
               <strong>No coach relationships yet.</strong>

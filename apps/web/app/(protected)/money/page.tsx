@@ -3,6 +3,7 @@ import { getMoneyWorkspaceForUser, prisma } from '@fitcrew/db';
 import { NetworkNav } from '../network-nav';
 import { MoneyWorkspace } from './workspace';
 import { requireFeature, requireTenantContext } from '@/lib/authorization';
+import { AccessFallback } from '../access-fallback';
 
 const inr = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 });
 const amountOf = (value: string) => Number(value) || 0;
@@ -39,6 +40,6 @@ export default async function MoneyPage({ searchParams }: { searchParams: { tena
       </main>
     );
   } catch {
-    return <main className="dashboard-page money-page"><NetworkNav tenantId={tenantId} /><p className="form-error" role="alert">Money workspace is unavailable for this account.</p></main>;
+    return <main className="dashboard-page money-page"><NetworkNav tenantId={tenantId} /><AccessFallback tenantId={tenantId} eyebrow="Money" title="Money workspace is not available" message="You are signed in, but payments and reconciliation are not available to this account in the selected workspace. Ask an administrator to verify your role." primaryHref="/dashboard" primaryLabel="Go to workspace" /></main>;
   }
 }

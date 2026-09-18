@@ -9,7 +9,7 @@ export async function NetworkNav({ tenantId }: { tenantId?: string }) {
   const session = await auth();
   if (!session?.user?.id) return null;
   if (!tenantId) return <NetworkNavClient roles={[]} tenantId={tenantId} />;
-  const principal = await getPrincipalForUser(prisma, tenantId, session.user.id);
+  const principal = await getPrincipalForUser(prisma, tenantId, session.user.id).catch(() => null);
   const roles = [...new Set(principal ? effectiveAssignments(principal).map((assignment) => assignment.role) : [])] as AppRole[];
   return <NetworkNavClient roles={roles} tenantId={tenantId} />;
 }
