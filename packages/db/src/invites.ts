@@ -1,4 +1,5 @@
 import {
+  effectiveAssignments,
   type AccessGate,
   type EmailAdapter,
   type Principal,
@@ -63,6 +64,7 @@ export async function createInviteForPrincipal(
 
   const email = normalizeInviteEmail(input.email);
   validateInviteScope(input);
+  await validateInviteOrganizationScope(tx, principal, input);
   const token = randomBytes(32).toString('base64url');
   const expiresAt = new Date(now.getTime() + (input.expiresInMs ?? DEFAULT_INVITE_TTL_MS));
   const invite = await tx.invite.create({
@@ -98,6 +100,27 @@ export async function createInviteForPrincipal(
   });
 
   return { inviteId: invite.id, email, role: input.role, expiresAt };
+}
+
+async function validateInviteOrganizationScope(
+  tx: TransactionClient,
+  principal: Principal,
+  input: CreateInviteInput,
+): Promise<void> {
+  if (input.scopeType !== 'organization') return;
+
+  const organization = await tx.organization.findFirst({
+    where: { id: input.scopeId!, tenantId: principal.tenantId, status: 'active' },
+    select: { id: true },
+  });
+  if (!organization) throw new InviteError('Organization scope is not available.');
+
+  const assignments = effectiveAssignments(principal);
+  const tenantOwner = assignments.some((assignment) => assignment.role === 'OwnerAdmin' && assignment.scopeType === 'tenant');
+  if (tenantOwner) return;
+
+  const hasOrganizationScope = assignments.some((assignment) => assignment.scopeType === 'organization' && assignment.scopeId === organization.id);
+  if (!hasOrganizationScope) throw new InviteError('Organization scope is not available.');
 }
 
 export async function createInviteForUser(

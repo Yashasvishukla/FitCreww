@@ -17,7 +17,7 @@ const links: readonly NavLink[] = [
   { href: '/training', label: 'Training', roles: clientFacing },
   { href: '/money', label: 'Money', roles: ['OwnerAdmin', 'Coach'] },
   { href: '/earnings', label: 'Earnings', roles: ['OwnerAdmin', 'Coach'] },
-  { href: '/profile', label: '◉ Account', roles: ['OwnerAdmin', 'Coach', 'OrgAdmin', 'Client'] },
+  { href: '/profile', label: 'Account', roles: ['OwnerAdmin', 'Coach', 'OrgAdmin', 'Client'] },
 ];
 
 export function getVisibleNavLinks(roles: readonly AppRole[]): readonly NavLink[] {

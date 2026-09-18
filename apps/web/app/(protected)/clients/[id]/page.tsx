@@ -5,14 +5,14 @@ import { EvaluationForm } from './evaluation-form';
 import { ProgressPanel } from './progress-panel';
 import { SatisfactionForm } from './satisfaction-form';
 import { NetworkNav } from '../../network-nav';
-import { DEMO_TENANT_ID, requireFeature } from '@/lib/authorization';
+import { requireFeature, requireTenantContext } from '@/lib/authorization';
 import { hasRole } from '@/lib/authorization';
 import { CoachAssignmentForm } from './coach-assignment-form';
 
 export default async function ClientIntakePage({ params, searchParams }: { params: { id: string }; searchParams: { tenantId?: string } }) {
   const session = await auth();
   if (!session?.user?.id) return null;
-  const tenantId = searchParams.tenantId ?? DEMO_TENANT_ID;
+  const tenantId = requireTenantContext(searchParams.tenantId);
   const principal = await requireFeature(session.user.id, tenantId, ['OwnerAdmin', 'Coach', 'OrgAdmin']);
   let client = null;
   try {

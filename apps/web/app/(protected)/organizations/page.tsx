@@ -2,14 +2,14 @@ import { auth } from '@/auth';
 import { getOrgDashboardForUser, listOrganizationsForUser, prisma } from '@fitcrew/db';
 import { OrganizationCreateForm } from './create-form';
 import { NetworkNav } from '../network-nav';
-import { DEMO_TENANT_ID, hasRole, requireFeature } from '@/lib/authorization';
+import { hasRole, requireFeature, requireTenantContext } from '@/lib/authorization';
 import { OrgDashboard } from './org-dashboard';
 import { OrganizationList } from './organization-list';
 
 export default async function OrganizationsPage({ searchParams }: { searchParams: { tenantId?: string } }) {
   const session = await auth();
   if (!session?.user?.id) return null;
-  const tenantId = searchParams.tenantId ?? DEMO_TENANT_ID;
+  const tenantId = requireTenantContext(searchParams.tenantId);
   const principal = await requireFeature(session.user.id, tenantId, ['OwnerAdmin', 'OrgAdmin']);
   const canCreate = hasRole(principal, 'OwnerAdmin');
   if (!canCreate) {

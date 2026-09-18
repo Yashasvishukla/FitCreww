@@ -1,12 +1,12 @@
 import Link from 'next/link';
 import { auth } from '@/auth';
 import { cleanOwnerDashboardError, getOwnerDashboard, getPrincipalForUser, prisma } from '@fitcrew/db';
-import { DEMO_TENANT_ID, defaultWorkspacePath, isTenantOwner } from '@/lib/authorization';
+import { defaultWorkspacePath, isTenantOwner, requireTenantContext } from '@/lib/authorization';
 import { NetworkNav } from '../../network-nav';
 import { redirect } from 'next/navigation';
 
 export default async function ExceptionsPage({ searchParams }: { searchParams: { tenantId?: string } }) {
-  const session = await auth(); if (!session?.user?.id) return null; const tenantId = searchParams.tenantId ?? DEMO_TENANT_ID; const query = `?tenantId=${encodeURIComponent(tenantId)}`;
+  const session = await auth(); if (!session?.user?.id) return null; const tenantId = requireTenantContext(searchParams.tenantId); const query = `?tenantId=${encodeURIComponent(tenantId)}`;
   const principal = await getPrincipalForUser(prisma, tenantId, session.user.id);
   if (!isTenantOwner(principal)) {
     const destination = defaultWorkspacePath(principal, tenantId);

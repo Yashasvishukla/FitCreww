@@ -18,6 +18,10 @@ type RazorpayOrder = {
   name: string;
   description: string;
   checkoutMode: 'live' | 'mock';
+  mockConfirmation?: {
+    razorpayPaymentId: string;
+    razorpaySignature: string;
+  };
 };
 
 declare global {
@@ -78,7 +82,7 @@ const amountOf = (value: string) => Number(value) || 0;
 const valueOf = (form: FormData, name: string) => String(form.get(name) ?? '').trim();
 const amountPattern = /^\d+(\.\d{1,2})?$/;
 
-export function MoneyWorkspace({ tenantId, initial }: { tenantId: string; initial: Data }) {
+export function MoneyWorkspace({ tenantId, initial, checkoutMode }: { tenantId: string; initial: Data; checkoutMode: 'live' | 'mock' | 'unavailable' }) {
   const router = useRouter();
   const [error, setError] = useState('');
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -90,6 +94,21 @@ export function MoneyWorkspace({ tenantId, initial }: { tenantId: string; initia
   const availableSubscriptions = initial.subscriptions.filter((subscription) => !collectedSubscriptionIds.has(subscription.id));
   const confirmedTotal = initial.payments.filter((payment) => payment.status === 'confirmed').reduce((total, payment) => total + amountOf(payment.amount), 0);
   const pending = initial.payments.filter((payment) => payment.status === 'pending');
+  const gatewayPending = pending.filter((payment) => payment.gatewayProvider === 'razorpay');
+  const checkoutStatus = gatewayPending.length
+    ? 'Gateway reconciliation required'
+    : checkoutMode === 'mock'
+      ? 'Mock checkout enabled'
+      : checkoutMode === 'live'
+        ? 'Live checkout enabled'
+        : 'Online checkout unavailable';
+  const checkoutDetail = gatewayPending.length
+    ? `${gatewayPending.length} pending gateway payment${gatewayPending.length === 1 ? '' : 's'}`
+    : checkoutMode === 'unavailable'
+      ? 'Razorpay credentials required'
+      : initial.subscriptions.length
+        ? 'Confirming through FitCrew'
+        : 'No billable subscriptions';
   // Refreshing after a collection removes that subscription from the picker.
   // Fall back to the next available option so the controlled select never keeps
   // a stale, invisible value.
@@ -235,28 +254,46 @@ export function MoneyWorkspace({ tenantId, initial }: { tenantId: string; initia
       const response = await fetch('/api/money/razorpay/order', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
       const order = await response.json() as RazorpayOrder | { error?: string };
       if (!response.ok || !('orderId' in order)) throw new Error('error' in order ? order.error : 'Razorpay order failed.');
+      let checkoutResponse: RazorpayCheckoutResponse;
       if (order.checkoutMode === 'mock') {
         if (!window.confirm(`Mock payment: confirm ${inr.format(order.amountMinor / 100)}?`)) throw new Error('Payment was cancelled.');
-        setBusy(false);
-        settleAction(action, 'complete');
-        return true;
-      }
-      await loadRazorpayCheckout();
-      await new Promise<void>((resolve, reject) => {
-        const checkout = new window.Razorpay!({
-          key: order.keyId,
-          amount: order.amountMinor,
-          currency: order.currency,
-          name: order.name,
-          description: order.description,
-          order_id: order.orderId,
-          retry: { enabled: true, max_count: 2 },
-          theme: { color: '#0d6b65' },
-          modal: { ondismiss: () => reject(new Error('Payment was cancelled.')) },
-          handler: () => resolve(),
+        if (!order.mockConfirmation) throw new Error('Mock checkout confirmation is unavailable.');
+        checkoutResponse = {
+          razorpay_order_id: order.orderId,
+          razorpay_payment_id: order.mockConfirmation.razorpayPaymentId,
+          razorpay_signature: order.mockConfirmation.razorpaySignature,
+        };
+      } else {
+        await loadRazorpayCheckout();
+        checkoutResponse = await new Promise<RazorpayCheckoutResponse>((resolve, reject) => {
+          const checkout = new window.Razorpay!({
+            key: order.keyId,
+            amount: order.amountMinor,
+            currency: order.currency,
+            name: order.name,
+            description: order.description,
+            order_id: order.orderId,
+            retry: { enabled: true, max_count: 2 },
+            theme: { color: '#0d6b65' },
+            modal: { ondismiss: () => reject(new Error('Payment was cancelled.')) },
+            handler: (checkoutResult) => resolve(checkoutResult),
+          });
+          checkout.open();
         });
-        checkout.open();
+      }
+      const confirmResponse = await fetch('/api/money/razorpay/confirm', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          tenantId,
+          paymentId: order.paymentId,
+          razorpayOrderId: checkoutResponse.razorpay_order_id,
+          razorpayPaymentId: checkoutResponse.razorpay_payment_id,
+          razorpaySignature: checkoutResponse.razorpay_signature,
+        }),
       });
+      const confirmResult = await confirmResponse.json().catch(() => null) as { error?: string } | null;
+      if (!confirmResponse.ok) throw new Error(confirmResult?.error ?? 'FitCrew could not confirm this checkout.');
       setBusy(false);
       settleAction(action, 'complete');
       return true;
@@ -323,7 +360,7 @@ export function MoneyWorkspace({ tenantId, initial }: { tenantId: string; initia
       <section className="finance-summary" aria-label="Collections overview">
         <FinanceMetric label="Confirmed" value={inr.format(confirmedTotal)} detail="Cleared inflow" tone="blue" />
         <FinanceMetric label="Pending" value={String(pending.length)} detail="Awaiting admin verification" tone="orange" />
-        <FinanceMetric label="Checkout" value="Soon" detail="Online collection" tone="green" />
+        <FinanceMetric label="Checkout" value={checkoutStatus} detail={checkoutDetail} tone={gatewayPending.length ? 'orange' : 'green'} />
         <FinanceMetric label="Subscriptions" value={String(availableSubscriptions.length)} detail="Ready to bill" tone="purple" />
       </section>
 
@@ -332,7 +369,7 @@ export function MoneyWorkspace({ tenantId, initial }: { tenantId: string; initia
           <div>
             <p className="eyebrow">Primary action</p>
             <h2>Payment collection.</h2>
-            <p>Temporary: online checkout is still being finalized. For local end-to-end testing, set PAYMENT_GATEWAY_MODE=mock before starting the app. Manual UTR and proof-based collection are unavailable during this transition.</p>
+            <p>Checkout opens through Razorpay and is marked paid only after FitCrew verifies the gateway signature and posts the ledger entry.</p>
           </div>
           <form className="finance-form" onSubmit={acceptClientPayment} noValidate>
             <label className="finance-subscription-field">
@@ -350,8 +387,8 @@ export function MoneyWorkspace({ tenantId, initial }: { tenantId: string; initia
               <FieldError id="subscriptionId-error" message={fieldErrors.subscriptionId} />
               <small className="muted">{selectedSubscription?.coachName ? `Assigned coach: ${selectedSubscription.coachName} · ` : ''}Fixed amount: {selectedSubscription ? inr.format(amountOf(selectedSubscription.price)) : '—'}</small>
             </label>
-            <button className="primary-button" disabled={busy || !availableSubscriptions.length} data-state={stateOf('client-payment')} aria-busy={stateOf('client-payment') === 'submitting'}>
-              {stateOf('client-payment') === 'submitting' ? 'Starting checkout' : 'Continue to checkout'}
+            <button className="primary-button" disabled={busy || !availableSubscriptions.length || checkoutMode === 'unavailable'} data-state={stateOf('client-payment')} aria-busy={stateOf('client-payment') === 'submitting'}>
+              {stateOf('client-payment') === 'submitting' ? 'Starting checkout' : checkoutMode === 'unavailable' ? 'Checkout unavailable' : 'Continue to checkout'}
             </button>
           </form>
         </section>
@@ -467,8 +504,8 @@ export function MoneyWorkspace({ tenantId, initial }: { tenantId: string; initia
                 <input name="organizationAmount" placeholder="0.00" required {...amountProps('organizationAmount')} />
                 <FieldError id="organizationAmount-error" message={fieldErrors.organizationAmount} />
               </label>
-              <button className="secondary-button" disabled={busy || !initial.organizations.length} data-state={stateOf('organization-payment')} aria-busy={stateOf('organization-payment') === 'submitting'}>
-                {stateOf('organization-payment') === 'submitting' ? 'Opening checkout' : 'Accept payment'}
+              <button className="secondary-button" disabled={busy || !initial.organizations.length || checkoutMode === 'unavailable'} data-state={stateOf('organization-payment')} aria-busy={stateOf('organization-payment') === 'submitting'}>
+                {stateOf('organization-payment') === 'submitting' ? 'Opening checkout' : checkoutMode === 'unavailable' ? 'Checkout unavailable' : 'Accept payment'}
               </button>
             </form>
           </section>

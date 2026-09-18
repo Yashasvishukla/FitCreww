@@ -2,7 +2,7 @@ import { auth } from '@/auth';
 import { getEarningsForUser, prisma } from '@fitcrew/db';
 import { NetworkNav } from '../network-nav';
 import { EarningsWorkspace } from './workspace';
-import { DEMO_TENANT_ID, requireFeature } from '@/lib/authorization';
+import { requireFeature, requireTenantContext } from '@/lib/authorization';
 
 const inr = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 });
 const amountOf = (value: string) => Number(value) || 0;
@@ -10,7 +10,7 @@ const amountOf = (value: string) => Number(value) || 0;
 export default async function EarningsPage({ searchParams }: { searchParams: { tenantId?: string } }) {
   const session = await auth();
   if (!session?.user?.id) return null;
-  const tenantId = searchParams.tenantId ?? DEMO_TENANT_ID;
+  const tenantId = requireTenantContext(searchParams.tenantId);
   await requireFeature(session.user.id, tenantId, ['OwnerAdmin', 'Coach']);
   try {
     const data = await getEarningsForUser(prisma, tenantId, session.user.id);

@@ -2,15 +2,20 @@ import { auth } from '@/auth';
 import { getMoneyWorkspaceForUser, prisma } from '@fitcrew/db';
 import { NetworkNav } from '../network-nav';
 import { MoneyWorkspace } from './workspace';
-import { DEMO_TENANT_ID, requireFeature } from '@/lib/authorization';
+import { requireFeature, requireTenantContext } from '@/lib/authorization';
 
 const inr = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 });
 const amountOf = (value: string) => Number(value) || 0;
+const checkoutMode = process.env.NODE_ENV === 'development' && process.env.PAYMENT_GATEWAY_MODE === 'mock'
+  ? 'mock'
+  : process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET
+    ? 'live'
+    : 'unavailable';
 
 export default async function MoneyPage({ searchParams }: { searchParams: { tenantId?: string } }) {
   const session = await auth();
   if (!session?.user?.id) return null;
-  const tenantId = searchParams.tenantId ?? DEMO_TENANT_ID;
+  const tenantId = requireTenantContext(searchParams.tenantId);
   await requireFeature(session.user.id, tenantId, ['OwnerAdmin', 'Coach']);
   try {
     const data = await getMoneyWorkspaceForUser(prisma, tenantId, session.user.id);
@@ -30,7 +35,7 @@ export default async function MoneyPage({ searchParams }: { searchParams: { tena
             <small>{data.payments.length} records tracked</small>
           </div>
         </header>
-        <MoneyWorkspace tenantId={tenantId} initial={data} />
+        <MoneyWorkspace tenantId={tenantId} initial={data} checkoutMode={checkoutMode} />
       </main>
     );
   } catch {

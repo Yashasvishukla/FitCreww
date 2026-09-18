@@ -3,11 +3,11 @@ import { getPrincipalForUser, listClientsForUser, listCoachRosterForUser, listOr
 import { ClientHome } from '../client-home';
 import { EnrollmentForm } from './enrollment-form';
 import { NetworkNav } from '../network-nav';
-import { DEMO_TENANT_ID, hasRole, requireFeature } from '@/lib/authorization';
+import { hasRole, requireFeature, requireTenantContext } from '@/lib/authorization';
 import { ClientList } from './client-list';
 
 export default async function ClientsPage({ searchParams }: { searchParams: { tenantId?: string } }) {
-  const session = await auth(); if (!session?.user?.id) return null; const tenantId = searchParams.tenantId ?? DEMO_TENANT_ID;
+  const session = await auth(); if (!session?.user?.id) return null; const tenantId = requireTenantContext(searchParams.tenantId);
   const principal = await getPrincipalForUser(prisma, tenantId, session.user.id);
   if (principal?.assignments.some((assignment) => assignment.role === 'Client')) {
     const own = await listClientsForUser(prisma, tenantId, session.user.id);

@@ -2,13 +2,13 @@ import { auth } from '@/auth';
 import { listCoachRosterForUser } from '@fitcrew/db';
 import { CoachInviteForm } from './invite-form';
 import { NetworkNav } from '../network-nav';
-import { DEMO_TENANT_ID, requireFeature } from '@/lib/authorization';
+import { requireFeature, requireTenantContext } from '@/lib/authorization';
 import { CoachList } from './coach-list';
 
 export default async function CoachesPage({ searchParams }: { searchParams: { tenantId?: string } }) {
   const session = await auth();
   if (!session?.user?.id) return null;
-  const tenantId = searchParams.tenantId ?? DEMO_TENANT_ID;
+  const tenantId = requireTenantContext(searchParams.tenantId);
   await requireFeature(session.user.id, tenantId, ['OwnerAdmin']);
   let coaches; let loadError = false;
   try { coaches = await listCoachRosterForUser((await import('@fitcrew/db')).prisma, tenantId, session.user.id); }

@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
+import { createHmac } from 'node:crypto';
 import {
   DB_PACKAGE_NAME,
   TENANT_SCOPED_MODELS,
   applyTenantScope,
+  confirmRazorpayWebhookPayment,
+  createInviteForPrincipal,
   hashPassword,
+  InviteError,
   normalizeEmail,
   verifyPassword,
   withTenant,
@@ -229,5 +233,82 @@ describe('withTenant transaction wrapper', () => {
       'tenantId must be a valid UUID.',
     );
     expect(transactionOpened).toBe(false);
+  });
+});
+
+describe('invite scope validation', () => {
+  const ownerPrincipal = {
+    tenantId,
+    partyId: '33333333-3333-4333-8333-333333333333',
+    assignments: [{ role: 'OwnerAdmin', scopeType: 'tenant', scopeId: null, validFrom: '2020-01-01', validTo: null }],
+  } as const;
+  const gate = { can: async () => true, scopeQuery: () => ({}) };
+  const emailAdapter = { sendInvite: async () => undefined };
+
+  it('rejects organization-scoped invites when the organization is not active in the tenant', async () => {
+    const tx = {
+      organization: { findFirst: async () => null },
+      invite: { create: async () => { throw new Error('invite should not be created'); } },
+      auditLog: { create: async () => undefined },
+    };
+
+    await expect(createInviteForPrincipal(tx as never, ownerPrincipal as never, gate, {
+      email: 'org-admin@example.com',
+      role: 'OrgAdmin',
+      scopeType: 'organization',
+      scopeId: '44444444-4444-4444-8444-444444444444',
+      baseUrl: 'https://fitcrew.test',
+    }, emailAdapter)).rejects.toThrow(InviteError);
+  });
+
+  it('rejects organization-scoped invites outside a non-owner inviter organization scope', async () => {
+    const orgAdminPrincipal = {
+      tenantId,
+      partyId: '55555555-5555-4555-8555-555555555555',
+      assignments: [{ role: 'OrgAdmin', scopeType: 'organization', scopeId: '66666666-6666-4666-8666-666666666666', validFrom: '2020-01-01', validTo: null }],
+    } as const;
+    const tx = {
+      organization: { findFirst: async () => ({ id: '77777777-7777-4777-8777-777777777777' }) },
+      invite: { create: async () => { throw new Error('invite should not be created'); } },
+      auditLog: { create: async () => undefined },
+    };
+
+    await expect(createInviteForPrincipal(tx as never, orgAdminPrincipal as never, gate, {
+      email: 'coach@example.com',
+      role: 'Coach',
+      scopeType: 'organization',
+      scopeId: '77777777-7777-4777-8777-777777777777',
+      baseUrl: 'https://fitcrew.test',
+    }, emailAdapter)).rejects.toThrow('Organization scope is not available.');
+  });
+});
+
+describe('Razorpay webhook verification', () => {
+  const secret = 'whsec_fitcrew_test';
+  const sign = (body: string) => createHmac('sha256', secret).update(body).digest('hex');
+
+  it('rejects webhook payloads with an invalid signature', async () => {
+    process.env.RAZORPAY_WEBHOOK_SECRET = secret;
+    const rawBody = JSON.stringify({ event: 'payment.captured' });
+
+    await expect(confirmRazorpayWebhookPayment({} as never, {
+      rawBody,
+      signature: 'bad-signature',
+    })).rejects.toThrow('Razorpay webhook signature is invalid.');
+  });
+
+  it('acknowledges valid non-confirmation webhook events without opening a tenant transaction', async () => {
+    process.env.RAZORPAY_WEBHOOK_SECRET = secret;
+    const rawBody = JSON.stringify({ event: 'payment.failed' });
+    const client = {
+      $extends() {
+        throw new Error('transaction should not be opened for ignored events');
+      },
+    };
+
+    await expect(confirmRazorpayWebhookPayment(client as never, {
+      rawBody,
+      signature: sign(rawBody),
+    })).resolves.toEqual({ ignored: true });
   });
 });

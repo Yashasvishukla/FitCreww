@@ -2,12 +2,12 @@ import { auth } from '@/auth';
 import { listTrainingDashboardForUser, prisma } from '@fitcrew/db';
 import { NetworkNav } from '../network-nav';
 import { TrainingWorkspace } from './training-workspace';
-import { DEMO_TENANT_ID, hasRole, requireFeature } from '@/lib/authorization';
+import { hasRole, requireFeature, requireTenantContext } from '@/lib/authorization';
 
 export default async function TrainingPage({ searchParams }: { searchParams: { tenantId?: string; clientId?: string } }) {
   const session = await auth();
   if (!session?.user?.id) return null;
-  const tenantId = searchParams.tenantId ?? DEMO_TENANT_ID;
+  const tenantId = requireTenantContext(searchParams.tenantId);
   const principal = await requireFeature(session.user.id, tenantId, ['OwnerAdmin', 'Coach', 'OrgAdmin']);
   const canEditTraining = hasRole(principal, 'OwnerAdmin') || hasRole(principal, 'Coach');
   let dashboard: Awaited<ReturnType<typeof listTrainingDashboardForUser>> | null = null;
