@@ -27,8 +27,8 @@ export {
   NetworkManagementError,
 } from './network-management.js';
 export type { CoachRosterEntry, CoachTermsInput, OrganizationInput, OrganizationCoachInput } from './network-management.js';
-export { cleanClientLifecycleError, enrollClientForUser, reassignClientCoachForUser, recordBaselineForUser, recordEvaluationForUser, listEvaluationsForUser, recordSatisfactionForUser, getSatisfactionMetricsForUser, ClientLifecycleError } from './client-lifecycle.js';
-export type { BaselineInput, EvaluationInput, SatisfactionInput, ClientListEntry, EnrollmentInput, ReassignCoachInput } from './client-lifecycle.js';
+export { cleanClientLifecycleError, enrollClientForUser, estimateFoodNutrition, estimateFoodNutritionFromBestSource, estimateFoodNutritionFromUsda, reassignClientCoachForUser, recordBaselineForUser, recordEvaluationForUser, listEvaluationsForUser, listNutritionForUser, recordNutritionForUser, recordSatisfactionForUser, getSatisfactionMetricsForUser, ClientLifecycleError } from './client-lifecycle.js';
+export type { BaselineInput, EvaluationInput, NutritionDaySummary, NutritionEstimate, NutritionEstimateSource, NutritionInput, NutritionLogEntry, SatisfactionInput, ClientListEntry, EnrollmentInput, ReassignCoachInput } from './client-lifecycle.js';
 export { listClientsForUser } from './client-lifecycle.js';
 export {
   cleanTrainingOperationsError,
@@ -61,8 +61,8 @@ export { TENANT_SCOPED_MODELS, applyTenantScope, assertTenantId, tenantScoping }
 export type { TenantScopingOptions } from './tenant-scoping.js';
 export { withTenant } from './with-tenant.js';
 export { PrismaLedgerRepository } from './ledger.js';
-export { cleanPaymentRecordingError, confirmPaymentForUser, confirmRazorpayPaymentForUser, createRazorpayOrderForUser, deletePayoutHandleForUser, getMoneyWorkspaceForUser, PaymentRecordingError, recordClientPaymentForUser, recordOrganizationPaymentForUser, reverseClientPaymentForUser, savePayoutHandleForUser, updatePayoutHandleForUser, updateRefundClawbackRateForUser } from './payment-recording.js';
-export type { ConfirmPaymentInput, ConfirmRazorpayPaymentInput, CreateRazorpayOrderInput, PayoutHandleInput, RecordClientPaymentInput, RecordOrganizationPaymentInput, ReversePaymentInput, UpdatePayoutHandleInput } from './payment-recording.js';
+export { cleanPaymentRecordingError, confirmPaymentForUser, confirmRazorpayPaymentForUser, confirmRazorpayWebhookPayment, createRazorpayOrderForUser, deletePayoutHandleForUser, getMoneyWorkspaceForUser, PaymentRecordingError, recordClientPaymentForUser, recordOrganizationPaymentForUser, reverseClientPaymentForUser, savePayoutHandleForUser, updatePayoutHandleForUser, updateRefundClawbackRateForUser } from './payment-recording.js';
+export type { ConfirmPaymentInput, ConfirmRazorpayPaymentInput, ConfirmRazorpayWebhookInput, CreateRazorpayOrderInput, PayoutHandleInput, RecordClientPaymentInput, RecordOrganizationPaymentInput, ReversePaymentInput, UpdatePayoutHandleInput } from './payment-recording.js';
 export { cleanSettlementError, confirmSettlementForUser, createSettlementForUser, downloadPayslipForUser, getEarningsForUser, mintPayslipReadUrl, SettlementError } from './settlements.js';
 export type { ConfirmSettlementInput, CreateSettlementInput } from './settlements.js';
 export type { TenantScopedTransactionClient, TransactionCapableClient, TransactionClient, WithTenantOptions } from './with-tenant.js';

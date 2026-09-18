@@ -2,13 +2,14 @@ import { auth } from '@/auth';
 import { listCoachRosterForUser } from '@fitcrew/db';
 import { CoachInviteForm } from './invite-form';
 import { NetworkNav } from '../network-nav';
-import { DEMO_TENANT_ID, requireFeature } from '@/lib/authorization';
+import { requireFeature, requireTenantContext } from '@/lib/authorization';
 import { CoachList } from './coach-list';
+import { AccessFallback } from '../access-fallback';
 
 export default async function CoachesPage({ searchParams }: { searchParams: { tenantId?: string } }) {
   const session = await auth();
   if (!session?.user?.id) return null;
-  const tenantId = searchParams.tenantId ?? DEMO_TENANT_ID;
+  const tenantId = requireTenantContext(searchParams.tenantId);
   await requireFeature(session.user.id, tenantId, ['OwnerAdmin']);
   let coaches; let loadError = false;
   try { coaches = await listCoachRosterForUser((await import('@fitcrew/db')).prisma, tenantId, session.user.id); }
@@ -38,7 +39,7 @@ export default async function CoachesPage({ searchParams }: { searchParams: { te
             <span className="count-label">{coaches.length} active</span>
           </div>
           {loadError ? (
-            <p className="form-error" role="alert">The roster could not be loaded.</p>
+            <AccessFallback tenantId={tenantId} eyebrow="Coaches" title="Coach roster could not be loaded" message="The workspace is open, but coach data is unavailable right now. Try again, or check that your owner access is still active." primaryHref="/coaches" primaryLabel="Try again" embedded />
           ) : coaches.length === 0 ? (
             <div className="coach-empty-state">
               <strong>No coach relationships yet.</strong>

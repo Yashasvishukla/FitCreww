@@ -34,6 +34,7 @@
     "@fitcrew/domain": "workspace:*",
     "@node-rs/argon2": "2.2.0",
     "@prisma/client": "^5.20.0",
+    "razorpay": "^2.9.8",
     "sharp": "^0.33.5"
   },
   "devDependencies": {
