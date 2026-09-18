@@ -1,7 +1,7 @@
 import { assignCoachToOrganizationForUser, cleanNetworkManagementError, createOrganizationAndInviteForUser, listAssignableCoachesForUser, listOrganizationsForUser, prisma } from '@fitcrew/db';
 import { ConsoleEmailAdapter } from '@fitcrew/application';
 import { auth } from '@/auth';
-import { createConfiguredEmailAdapter, EmailConfigurationError, EmailDeliveryError } from '@/lib/email-adapter';
+import { createConfiguredEmailAdapter, EmailConfigurationError, ShareableInviteEmailAdapter } from '@/lib/email-adapter';
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 
@@ -27,16 +27,16 @@ export async function POST(request: Request) {
   const baseUrl = process.env.APP_BASE_URL ?? (process.env.NODE_ENV === 'development' ? new URL(request.url).origin : null);
   if (!baseUrl) return NextResponse.json({ error: 'Invite delivery is not configured.' }, { status: 503 });
   try {
-    const emailAdapter = createConfiguredEmailAdapter();
+    const emailAdapter = new ShareableInviteEmailAdapter(createConfiguredEmailAdapter());
     const result = await createOrganizationAndInviteForUser(prisma, parsed.data.tenantId, session.user.id, { ...parsed.data, baseUrl }, emailAdapter);
     return NextResponse.json({
       ...result,
       onboardingUrl: result.invite.inviteUrl,
+      deliveryError: emailAdapter.deliveryError,
       ...(emailAdapter instanceof ConsoleEmailAdapter ? { devInviteUrl: emailAdapter.sent[0]?.inviteUrl } : {}),
     }, { status: 201 });
   } catch (error) {
     if (error instanceof EmailConfigurationError) return NextResponse.json({ error: error.message }, { status: 503 });
-    if (error instanceof EmailDeliveryError) return NextResponse.json({ error: error.message }, { status: 502 });
     return NextResponse.json({ error: cleanNetworkManagementError(error) }, { status: 400 });
   }
 }

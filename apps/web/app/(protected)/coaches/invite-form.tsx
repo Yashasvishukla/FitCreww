@@ -6,6 +6,7 @@ type InviteResponse = {
   readonly onboardingUrl?: string;
   readonly devInviteUrl?: string;
   readonly expiresAt?: string;
+  readonly deliveryError?: string | null;
 };
 
 export function CoachInviteForm({ tenantId }: { tenantId: string }) {
@@ -34,7 +35,7 @@ export function CoachInviteForm({ tenantId }: { tenantId: string }) {
       return;
     }
 
-    setMessage('Email sent. The onboarding link is valid for 24 hours.');
+    setMessage(result.deliveryError ? 'Invite created. Email was not delivered; copy the onboarding link below.' : 'Email sent. The onboarding link is valid for 24 hours.');
     setInviteUrl(result.onboardingUrl ?? result.devInviteUrl ?? '');
     form.reset();
   }

@@ -1,7 +1,7 @@
 import { createInviteForUser, cleanInviteError, prisma } from '@fitcrew/db';
 import { ConsoleEmailAdapter } from '@fitcrew/application';
 import { auth } from '@/auth';
-import { createConfiguredEmailAdapter, EmailConfigurationError, EmailDeliveryError } from '@/lib/email-adapter';
+import { createConfiguredEmailAdapter, EmailConfigurationError, ShareableInviteEmailAdapter } from '@/lib/email-adapter';
 import { resolveInviteBaseUrl } from '@/lib/invite-base-url';
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
@@ -22,7 +22,7 @@ export async function POST(request: Request) {
   if (!parsed.success) return NextResponse.json({ error: 'Invalid invite request.' }, { status: 400 });
 
   try {
-    const emailAdapter = createConfiguredEmailAdapter();
+    const emailAdapter = new ShareableInviteEmailAdapter(createConfiguredEmailAdapter());
     const baseUrl = resolveInviteBaseUrl(request.url);
     if (!baseUrl) return NextResponse.json({ error: 'Invite links require APP_BASE_URL or a Vercel deployment URL.' }, { status: 503 });
     const result = await createInviteForUser(prisma, parsed.data.tenantId, session.user.id, {
@@ -35,12 +35,12 @@ export async function POST(request: Request) {
     const response = {
       ...result,
       onboardingUrl: result.inviteUrl,
+      deliveryError: emailAdapter.deliveryError,
       ...(emailAdapter instanceof ConsoleEmailAdapter ? { devInviteUrl: emailAdapter.sent[0]?.inviteUrl } : {}),
     };
     return NextResponse.json(response, { status: 201 });
   } catch (error) {
     if (error instanceof EmailConfigurationError) return NextResponse.json({ error: error.message }, { status: 503 });
-    if (error instanceof EmailDeliveryError) return NextResponse.json({ error: error.message }, { status: 502 });
     return NextResponse.json({ error: cleanInviteError(error) }, { status: 400 });
   }
 }
