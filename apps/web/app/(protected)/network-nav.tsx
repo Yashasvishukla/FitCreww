@@ -2,14 +2,15 @@ import { auth } from '@/auth';
 import { effectiveAssignments } from '@fitcrew/application';
 import { getPrincipalForUser, prisma } from '@fitcrew/db';
 import { NetworkNavClient } from './network-nav-client';
+import { signOutFromDashboard } from './dashboard/actions';
 
 export type AppRole = 'OwnerAdmin' | 'Coach' | 'OrgAdmin' | 'Client';
 
 export async function NetworkNav({ tenantId }: { tenantId?: string }) {
   const session = await auth();
   if (!session?.user?.id) return null;
-  if (!tenantId) return <NetworkNavClient roles={[]} tenantId={tenantId} />;
+  if (!tenantId) return <NetworkNavClient roles={[]} tenantId={tenantId} signOutAction={signOutFromDashboard} />;
   const principal = await getPrincipalForUser(prisma, tenantId, session.user.id).catch(() => null);
   const roles = [...new Set(principal ? effectiveAssignments(principal).map((assignment) => assignment.role) : [])] as AppRole[];
-  return <NetworkNavClient roles={roles} tenantId={tenantId} />;
+  return <NetworkNavClient roles={roles} tenantId={tenantId} signOutAction={signOutFromDashboard} />;
 }

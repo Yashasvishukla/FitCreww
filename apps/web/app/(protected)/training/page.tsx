@@ -37,7 +37,7 @@ export default async function TrainingPage({ searchParams }: { searchParams: { t
           primaryHref="/dashboard"
           primaryLabel="Go to workspace"
         />
-      ) : <TrainingWorkspace tenantId={tenantId} dashboard={dashboard} canEdit={canEditTraining} />}
+      ) : <TrainingWorkspace tenantId={tenantId} dashboard={dashboard} canEdit={canEditTraining} showWorkoutHistory={hasRole(principal, 'OwnerAdmin')} />}
     </main>
   );
 }

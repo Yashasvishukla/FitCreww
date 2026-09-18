@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { TrainingDashboard } from "@fitcrew/db";
 
-type Props = { tenantId: string; dashboard: TrainingDashboard; canEdit: boolean };
+type Props = { tenantId: string; dashboard: TrainingDashboard; canEdit: boolean; showWorkoutHistory: boolean };
 type SetRow = {
   id: string;
   weight: string;
@@ -34,9 +34,9 @@ const setValidationMessage = (set: SetRow) =>
     ? "Enter a valid weight (0–1000 kg) and reps (0–999) before completing the set."
     : null;
 
-export function TrainingWorkspace({ tenantId, dashboard, canEdit }: Props) {
+export function TrainingWorkspace({ tenantId, dashboard, canEdit, showWorkoutHistory }: Props) {
   if (!canEdit) return <ReadOnlyTrainingWorkspace sessions={dashboard.sessions} />;
-  return <EditableTrainingWorkspace tenantId={tenantId} dashboard={dashboard} />;
+  return <EditableTrainingWorkspace tenantId={tenantId} dashboard={dashboard} showWorkoutHistory={showWorkoutHistory} />;
 }
 
 function ReadOnlyTrainingWorkspace({ sessions }: { sessions: readonly SessionRow[] }) {
@@ -53,7 +53,7 @@ function ReadOnlyTrainingWorkspace({ sessions }: { sessions: readonly SessionRow
   );
 }
 
-function EditableTrainingWorkspace({ tenantId, dashboard }: Omit<Props, "canEdit">) {
+function EditableTrainingWorkspace({ tenantId, dashboard, showWorkoutHistory }: Omit<Props, "canEdit">) {
   const [clientId, setClientId] = useState(
     dashboard.clients[0]?.clientId ?? "",
   );
@@ -76,7 +76,7 @@ function EditableTrainingWorkspace({ tenantId, dashboard }: Omit<Props, "canEdit
   >("idle");
   const [invalidSetIds, setInvalidSetIds] = useState<string[]>([]);
   const [touchedFields, setTouchedFields] = useState<string[]>([]);
-  const [globalHistoryOpen, setGlobalHistoryOpen] = useState(false);
+  const [globalHistoryOpen, setGlobalHistoryOpen] = useState(showWorkoutHistory);
   const activeClient = workspace.clients.find(
     (client) => client.clientId === clientId,
   );
@@ -576,30 +576,6 @@ function EditableTrainingWorkspace({ tenantId, dashboard }: Omit<Props, "canEdit
               <button onClick={() => void saveRestDefault()} disabled={restDefaultState === "saving"} aria-live="polite">
                 {restDefaultState === "saving" ? "Saving…" : restDefaultState === "saved" ? "Saved ✓" : restDefaultState === "error" ? "Try again" : "Set default"}
               </button>
-            </div>
-          </section>
-          <section className="quick-tools">
-            <p>TOOLS</p>
-            <button>
-              1RM calculator <b>›</b>
-            </button>
-            <button>
-              Plate calculator <b>›</b>
-            </button>
-            <button>
-              Exercise notes <b>›</b>
-            </button>
-          </section>
-          <section className="today-card">
-            <p>TODAY</p>
-            <strong>{workout.length} exercises</strong>
-            <span>{totalSets} planned sets</span>
-            <div>
-              <i
-                style={{
-                  width: `${totalSets ? (completed / totalSets) * 100 : 0}%`,
-                }}
-              />
             </div>
           </section>
         </aside>

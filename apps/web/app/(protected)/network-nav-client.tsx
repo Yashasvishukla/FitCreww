@@ -25,7 +25,7 @@ export function getVisibleNavLinks(roles: readonly AppRole[]): readonly NavLink[
   return links.filter((link) => link.roles.some((role) => roles.includes(role)));
 }
 
-export function NetworkNavClient({ roles, tenantId }: { roles: readonly AppRole[]; tenantId?: string }) {
+export function NetworkNavClient({ roles, tenantId, signOutAction }: { roles: readonly AppRole[]; tenantId?: string; signOutAction: () => Promise<void> }) {
   const pathname = usePathname();
   const navRef = useRef<HTMLElement>(null);
   const visibleLinks = getVisibleNavLinks(roles);
@@ -44,6 +44,7 @@ export function NetworkNavClient({ roles, tenantId }: { roles: readonly AppRole[
         const href = tenantId ? `${link.href}?tenantId=${encodeURIComponent(tenantId)}` : link.href;
         return <Link aria-current={active ? 'page' : undefined} href={href} key={link.href}>{link.label}</Link>;
       })}
+      <form className="network-nav-signout" action={signOutAction}><button type="submit">Sign out</button></form>
     </nav>
   );
 }

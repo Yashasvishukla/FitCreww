@@ -1,5 +1,5 @@
 import { auth } from '@/auth';
-import { cleanClientLifecycleError, listNutritionForUser, prisma, recordNutritionForUser } from '@fitcrew/db';
+import { cleanClientLifecycleError, listNutritionCalendarForUser, listNutritionHistoryForUser, listNutritionForUser, prisma, recordNutritionForUser } from '@fitcrew/db';
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 
@@ -15,8 +15,11 @@ export async function GET(request: Request) {
   const tenantId = url.searchParams.get('tenantId');
   const clientId = url.searchParams.get('clientId');
   const date = url.searchParams.get('date') ?? undefined;
+  const month = url.searchParams.get('month');
+  const from = url.searchParams.get('from');
+  const to = url.searchParams.get('to');
   if (!tenantId || !clientId) return NextResponse.json({ error: 'tenantId and clientId are required.' }, { status: 400 });
-  try { return NextResponse.json(await listNutritionForUser(prisma, tenantId, session.user.id, clientId, date)); } catch (error) { return NextResponse.json({ error: cleanClientLifecycleError(error) }, { status: 403 }); }
+  try { return NextResponse.json(month ? await listNutritionCalendarForUser(prisma, tenantId, session.user.id, clientId, month) : from && to ? await listNutritionHistoryForUser(prisma, tenantId, session.user.id, clientId, from, to) : await listNutritionForUser(prisma, tenantId, session.user.id, clientId, date)); } catch (error) { return NextResponse.json({ error: cleanClientLifecycleError(error) }, { status: 403 }); }
 }
 
 export async function POST(request: Request) {

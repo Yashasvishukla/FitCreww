@@ -1,5 +1,5 @@
 import { effectiveAssignments } from '@fitcrew/application';
-import { Money } from '@fitcrew/domain';
+import { DomainError, Money } from '@fitcrew/domain';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { accessGateForPrincipal, resolvePrincipal } from './access-gate.js';
 import { prisma } from './prisma.js';
@@ -13,11 +13,13 @@ export type BaselineInput = { clientId: string; measurements: Record<string, num
 export type EvaluationInput = BaselineInput & { evaluatedAt?: string };
 export type SatisfactionInput = { clientId: string; score: number; comment?: string };
 export type NutritionInput = { clientId: string; foodName: string; mealType: 'breakfast' | 'lunch' | 'dinner' | 'snack'; inputSource?: 'text' | 'camera' | 'barcode' | 'manual'; quantityText?: string; servingGrams?: number; loggedAt?: string; notes?: string; photoAssetId?: string; nutrition?: Partial<Pick<NutritionEstimate, 'calories' | 'proteinGrams' | 'carbGrams' | 'fatGrams' | 'fiberGrams' | 'confidence'>> };
-export type ClientListEntry = { clientId: string; name: string; organizationId: string | null; coachPartyId: string | null; status: string; workflowState: string | null; photoConsent: boolean; };
+export type ClientListEntry = { clientId: string; name: string; email: string | null; organizationId: string | null; coachPartyId: string | null; status: string; workflowState: string | null; photoConsent: boolean; };
+export type ClientPage = { clients: ClientListEntry[]; total: number; page: number; pageSize: number };
 export type NutritionEstimateSource = 'usda-fdc' | 'fitcrew-local' | 'manual';
 export type NutritionEstimate = { foodName: string; servingGrams: number; calories: number; proteinGrams: number; carbGrams: number; fatGrams: number; fiberGrams: number; confidence: number; matchedFood: string; source: NutritionEstimateSource; sourceId?: string; dataType?: string };
 export type NutritionLogEntry = NutritionEstimate & { id: string; mealType: string; inputSource: string; quantityText: string | null; loggedAt: string; notes: string | null };
 export type NutritionDaySummary = { date: string; totals: { calories: number; proteinGrams: number; carbGrams: number; fatGrams: number; fiberGrams: number }; byMeal: Record<string, { calories: number; count: number }>; entries: NutritionLogEntry[] };
+export type NutritionCalendarDay = { date: string; calories: number; count: number };
 
 export class ClientLifecycleError extends Error { constructor(message: string) { super(message); this.name = 'ClientLifecycleError'; } }
 
@@ -68,8 +70,31 @@ export async function listClientsForUser(client: PrismaClient, tenantId: string,
   return withTenant(client as never, tenantId, async (tx: Tx) => {
     const principal = await resolvePrincipal(tx, tenantId, userId);
     if (!principal) throw new ClientLifecycleError('Forbidden.');
-    const rows = await tx.client.findMany({ where: accessGateForPrincipal(tx, principal).scopeQuery(principal, 'Client') as never, include: { party: true, currentCoachAssignment: true }, orderBy: { party: { displayName: 'asc' } } });
-    return rows.map((row) => ({ clientId: row.id, name: row.party.displayName, organizationId: row.organizationId, coachPartyId: row.currentCoachAssignment?.coachPartyId ?? null, status: row.status, workflowState: row.workflowState, photoConsent: row.photoConsent }));
+    const rows = await tx.client.findMany({ where: accessGateForPrincipal(tx, principal).scopeQuery(principal, 'Client') as never, include: { party: { include: { user: { select: { email: true } } } }, currentCoachAssignment: true }, orderBy: { party: { displayName: 'asc' } } });
+    return rows.map((row) => ({ clientId: row.id, name: row.party.displayName, email: row.party.user?.email ?? null, organizationId: row.organizationId, coachPartyId: row.currentCoachAssignment?.coachPartyId ?? null, status: row.status, workflowState: row.workflowState, photoConsent: row.photoConsent }));
+  });
+}
+
+export async function listClientPageForUser(client: PrismaClient, tenantId: string, userId: string, options: { query?: string; page?: number; pageSize?: number } = {}): Promise<ClientPage> {
+  return withTenant(client as never, tenantId, async (tx: Tx) => {
+    const principal = await resolvePrincipal(tx, tenantId, userId);
+    if (!principal) throw new ClientLifecycleError('Forbidden.');
+    const page = Math.max(1, Math.floor(options.page ?? 1));
+    const pageSize = Math.min(20, Math.max(5, Math.floor(options.pageSize ?? 8)));
+    const query = options.query?.trim();
+    const scope = accessGateForPrincipal(tx, principal).scopeQuery(principal, 'Client');
+    const where = query ? { AND: [scope, { party: { OR: [{ displayName: { contains: query, mode: 'insensitive' } }, { user: { email: { contains: query, mode: 'insensitive' } } }] } }] } : scope;
+    const [rows, total] = await Promise.all([tx.client.findMany({ where: where as never, include: { party: { include: { user: { select: { email: true } } } }, currentCoachAssignment: true }, orderBy: { party: { displayName: 'asc' } }, skip: (page - 1) * pageSize, take: pageSize }), tx.client.count({ where: where as never })]);
+    return { clients: rows.map((row) => ({ clientId: row.id, name: row.party.displayName, email: row.party.user?.email ?? null, organizationId: row.organizationId, coachPartyId: row.currentCoachAssignment?.coachPartyId ?? null, status: row.status, workflowState: row.workflowState, photoConsent: row.photoConsent })), total, page, pageSize };
+  });
+}
+
+export async function getClientForUser(client: PrismaClient, tenantId: string, userId: string, clientId: string): Promise<ClientListEntry | null> {
+  return withTenant(client as never, tenantId, async (tx: Tx) => {
+    const principal = await resolvePrincipal(tx, tenantId, userId);
+    if (!principal) throw new ClientLifecycleError('Forbidden.');
+    const row = await tx.client.findFirst({ where: { AND: [accessGateForPrincipal(tx, principal).scopeQuery(principal, 'Client'), { id: clientId }] } as never, include: { party: { include: { user: { select: { email: true } } } }, currentCoachAssignment: true } });
+    return row ? { clientId: row.id, name: row.party.displayName, email: row.party.user?.email ?? null, organizationId: row.organizationId, coachPartyId: row.currentCoachAssignment?.coachPartyId ?? null, status: row.status, workflowState: row.workflowState, photoConsent: row.photoConsent } : null;
   });
 }
 
@@ -196,6 +221,37 @@ export async function listNutritionForUser(client: PrismaClient, tenantId: strin
   });
 }
 
+/** Lightweight month summary for the nutrition calendar. */
+export async function listNutritionCalendarForUser(client: PrismaClient, tenantId: string, userId: string, clientId: string, month: string): Promise<NutritionCalendarDay[]> {
+  return withTenant(client as never, tenantId, async (tx: Tx) => {
+    const { clientRecord } = await requireEvaluationClient(tx, tenantId, userId, clientId, 'read');
+    if (!/^\d{4}-\d{2}$/.test(month)) throw new ClientLifecycleError('Nutrition month is invalid.');
+    const start = new Date(`${month}-01T00:00:00.000Z`);
+    if (Number.isNaN(start.getTime())) throw new ClientLifecycleError('Nutrition month is invalid.');
+    const end = new Date(start); end.setUTCMonth(end.getUTCMonth() + 1);
+    const rows = await tx.nutritionLog.findMany({ where: { tenantId, clientId: clientRecord.id, loggedAt: { gte: start, lt: end } }, select: { loggedAt: true, calories: true } });
+    const daily = new Map<string, NutritionCalendarDay>();
+    for (const row of rows) {
+      const date = row.loggedAt.toISOString().slice(0, 10);
+      const current = daily.get(date) ?? { date, calories: 0, count: 0 };
+      current.calories += row.calories; current.count += 1; daily.set(date, current);
+    }
+    return [...daily.values()].sort((a, b) => a.date.localeCompare(b.date));
+  });
+}
+
+/** Small date-range summary used by the seven-day nutrition history. */
+export async function listNutritionHistoryForUser(client: PrismaClient, tenantId: string, userId: string, clientId: string, from: string, to: string): Promise<NutritionCalendarDay[]> {
+  return withTenant(client as never, tenantId, async (tx: Tx) => {
+    const { clientRecord } = await requireEvaluationClient(tx, tenantId, userId, clientId, 'read');
+    const start = parsePlainDate(from);
+    const end = new Date(parsePlainDate(to).getTime() + 86400000);
+    if (end <= start || end.getTime() - start.getTime() > 32 * 86400000) throw new ClientLifecycleError('Nutrition history range is invalid.');
+    const rows = await tx.nutritionLog.findMany({ where: { tenantId, clientId: clientRecord.id, loggedAt: { gte: start, lt: end } }, select: { loggedAt: true, calories: true } });
+    return summarizeNutritionDays(rows);
+  });
+}
+
 export async function getSatisfactionMetricsForUser(client: PrismaClient, tenantId: string, userId: string) {
   return withTenant(client as never, tenantId, async (tx: Tx) => { const principal = await resolvePrincipal(tx, tenantId, userId); if (!principal || !effectiveAssignments(principal).some((assignment) => assignment.role === 'OwnerAdmin' && assignment.scopeType === 'tenant')) throw new ClientLifecycleError('Forbidden.'); const rows = await tx.satisfactionRecord.findMany({ where: { tenantId }, select: { score: true } }); return { count: rows.length, averageScore: rows.length ? rows.reduce((sum, row) => sum + row.score, 0) / rows.length : null }; });
 }
@@ -298,9 +354,33 @@ function normalizeMacro(value: unknown, fallback: number, label: string): number
 function normalizeConfidence(value: unknown): number { const parsed = Number(value); if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) throw new ClientLifecycleError('Nutrition confidence must be between 0 and 1.'); return roundMacro(parsed); }
 function toNutritionEntry(row: { id: string; foodName: string; servingGrams: number | null; calories: number; proteinGrams: Prisma.Decimal | null; carbGrams: Prisma.Decimal | null; fatGrams: Prisma.Decimal | null; fiberGrams: Prisma.Decimal | null; confidence: Prisma.Decimal; mealType: string; inputSource: string; quantityText: string | null; loggedAt: Date; notes: string | null; metadata: Prisma.JsonValue }): NutritionLogEntry { const metadata = row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata) ? row.metadata as Record<string, unknown> : {}; return { id: row.id, foodName: row.foodName, servingGrams: row.servingGrams ?? 100, calories: row.calories, proteinGrams: Number(row.proteinGrams ?? 0), carbGrams: Number(row.carbGrams ?? 0), fatGrams: Number(row.fatGrams ?? 0), fiberGrams: Number(row.fiberGrams ?? 0), confidence: Number(row.confidence), matchedFood: String(metadata.matchedFood ?? row.foodName), source: parseNutritionSource(metadata.source), sourceId: typeof metadata.sourceId === 'string' ? metadata.sourceId : undefined, dataType: typeof metadata.dataType === 'string' ? metadata.dataType : undefined, mealType: row.mealType, inputSource: row.inputSource, quantityText: row.quantityText, loggedAt: row.loggedAt.toISOString(), notes: row.notes }; }
 function parseNutritionSource(value: unknown): NutritionEstimateSource { return value === 'usda-fdc' || value === 'manual' || value === 'fitcrew-local' ? value : 'fitcrew-local'; }
+function summarizeNutritionDays(rows: { loggedAt: Date; calories: number }[]): NutritionCalendarDay[] { const daily = new Map<string, NutritionCalendarDay>(); for (const row of rows) { const date = row.loggedAt.toISOString().slice(0, 10); const current = daily.get(date) ?? { date, calories: 0, count: 0 }; current.calories += row.calories; current.count += 1; daily.set(date, current); } return [...daily.values()].sort((a, b) => a.date.localeCompare(b.date)); }
 function parsePlainDate(value: string): Date { if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new ClientLifecycleError('Nutrition date is invalid.'); const date = new Date(`${value}T00:00:00.000Z`); if (Number.isNaN(date.getTime())) throw new ClientLifecycleError('Nutrition date is invalid.'); return date; }
 function plainToday(): string { return today().toISOString().slice(0, 10); }
 function roundMacro(value: number): number { return Math.round(value * 10) / 10; }
 function roundTotals<T extends Record<string, number>>(totals: T): T { return Object.fromEntries(Object.entries(totals).map(([key, value]) => [key, roundMacro(value)])) as T; }
-export function cleanClientLifecycleError(error: unknown): string { return error instanceof ClientLifecycleError ? error.message : 'Client lifecycle operation failed.'; }
+export function cleanClientLifecycleError(error: unknown): string {
+  if (error instanceof ClientLifecycleError) return error.message;
+  if (error instanceof DomainError) return error.message;
+  if (error instanceof Prisma.PrismaClientKnownRequestError) {
+    if (error.code === 'P2002') {
+      const target = Array.isArray(error.meta?.target) ? error.meta.target.join(', ') : String(error.meta?.target ?? '');
+      if (target.includes('email')) return 'A user already exists with this client email.';
+      if (target.includes('client_tenant_party_key')) return 'This person is already enrolled as a client in this workspace.';
+      return 'A record with these details already exists.';
+    }
+    if (error.code === 'P2003') return 'One of the selected records no longer exists. Refresh and choose the coach or organization again.';
+    if (error.code === 'P2000') return 'One of the enrollment fields is too long.';
+  }
+
+  const message = error instanceof Error ? error.message : '';
+  if (message.includes('invalid input value for enum') && message.includes('self')) {
+    return 'Client access is not fully migrated. Run database migrations before enrolling clients with login access.';
+  }
+  if (message.includes('role_assignment_client_scope') || message.includes('ScopeType')) {
+    return 'Client access is not fully migrated. Run database migrations before enrolling clients with login access.';
+  }
+
+  return 'Client lifecycle operation failed.';
+}
 export { prisma };

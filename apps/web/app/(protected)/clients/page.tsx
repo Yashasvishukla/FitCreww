@@ -29,6 +29,7 @@ export default async function ClientsPage({ searchParams }: { searchParams: { te
     } catch { /* Organization options are optional for the roster view. */ }
   } else if (hasRole(authorizedPrincipal, 'Coach')) {
     coaches = [{ partyId: authorizedPrincipal.partyId, displayName: 'Myself', email: null, engagementId: '', commissionRate: '0', commissionLifespanMonths: 1, validFrom: '', validTo: null }];
+    try { organizations = await listOrganizationsForUser(prisma, tenantId, session.user.id); } catch { /* Organization labels are optional for the roster. */ }
   } else {
     try {
       organizations = await listOrganizationsForUser(prisma, tenantId, session.user.id);
@@ -56,7 +57,7 @@ export default async function ClientsPage({ searchParams }: { searchParams: { te
         <section className="surface clients-list-panel">
           <div className="section-heading"><div><p className="eyebrow">Roster</p><h2>Visible clients</h2></div><span className="count-label">{clients.length} active</span></div>
           {clients.length === 0 ? <div className="client-empty-state"><strong>No clients visible in this scope.</strong><p>{organizationAdmin ? 'This organization does not have visible clients yet, or your organization assignment has not been connected to client records.' : 'Enroll a client to begin their intake, training, and progress journey.'}</p></div> : (
-            <ClientList tenantId={tenantId} clients={clients} />
+            <ClientList tenantId={tenantId} clients={clients} organizations={organizations.map((organization) => ({ id: organization.organizationId, name: organization.name }))} />
           )}
         </section>
         <aside className="surface client-enrollment-panel">

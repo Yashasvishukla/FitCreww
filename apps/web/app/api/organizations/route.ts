@@ -29,7 +29,11 @@ export async function POST(request: Request) {
   try {
     const emailAdapter = createConfiguredEmailAdapter();
     const result = await createOrganizationAndInviteForUser(prisma, parsed.data.tenantId, session.user.id, { ...parsed.data, baseUrl }, emailAdapter);
-    return NextResponse.json(emailAdapter instanceof ConsoleEmailAdapter ? { ...result, devInviteUrl: emailAdapter.sent[0]?.inviteUrl } : result, { status: 201 });
+    return NextResponse.json({
+      ...result,
+      onboardingUrl: result.invite.inviteUrl,
+      ...(emailAdapter instanceof ConsoleEmailAdapter ? { devInviteUrl: emailAdapter.sent[0]?.inviteUrl } : {}),
+    }, { status: 201 });
   } catch (error) {
     if (error instanceof EmailConfigurationError) return NextResponse.json({ error: error.message }, { status: 503 });
     if (error instanceof EmailDeliveryError) return NextResponse.json({ error: error.message }, { status: 502 });
