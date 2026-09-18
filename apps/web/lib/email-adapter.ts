@@ -17,6 +17,25 @@ export class EmailDeliveryError extends Error {
   }
 }
 
+/** Keeps a valid invite usable when its optional delivery email cannot be sent. */
+export class ShareableInviteEmailAdapter implements EmailAdapter {
+  public deliveryError: string | null = null;
+
+  constructor(private readonly delegate: EmailAdapter) {}
+
+  async sendInvite(email: InviteEmail): Promise<void> {
+    try {
+      await this.delegate.sendInvite(email);
+    } catch (error) {
+      this.deliveryError = error instanceof Error ? error.message : 'Email could not be delivered.';
+    }
+  }
+
+  async sendEvaluationReminder(email: EvaluationReminderEmail): Promise<void> {
+    await this.delegate.sendEvaluationReminder(email);
+  }
+}
+
 type ResendEmailAdapterOptions = {
   readonly apiKey: string;
   readonly from: string;

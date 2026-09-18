@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useLayoutEffect, useRef } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { AppRole } from './network-nav';
 
 type NavLink = { href: string; label: string; roles: readonly AppRole[] };
@@ -27,24 +27,29 @@ export function getVisibleNavLinks(roles: readonly AppRole[]): readonly NavLink[
 
 export function NetworkNavClient({ roles, tenantId, signOutAction }: { roles: readonly AppRole[]; tenantId?: string; signOutAction: () => Promise<void> }) {
   const pathname = usePathname();
-  const navRef = useRef<HTMLElement>(null);
   const visibleLinks = getVisibleNavLinks(roles);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const isActive = (link: NavLink) => pathname === link.href || (link.href !== '/dashboard' && pathname.startsWith(link.href));
+  const hrefFor = (link: NavLink) => tenantId ? `${link.href}?tenantId=${encodeURIComponent(tenantId)}` : link.href;
+  const mobileLinks = useMemo(() => {
+    const active = visibleLinks.find(isActive);
+    const firstLinks = visibleLinks.slice(0, 3);
+    return active && !firstLinks.includes(active) ? [...visibleLinks.slice(0, 2), active] : firstLinks;
+  }, [pathname, visibleLinks]);
 
-  useLayoutEffect(() => {
-    const nav = navRef.current;
-    const activeLink = nav?.querySelector<HTMLElement>('[aria-current="page"]');
-    if (!nav || !activeLink) return;
-    nav.scrollLeft = Math.max(0, activeLink.offsetLeft - (nav.clientWidth - activeLink.offsetWidth) / 2);
-  }, [pathname]);
+  useEffect(() => { setMenuOpen(false); }, [pathname]);
 
   return (
-    <nav className="network-nav" aria-label="Primary navigation" ref={navRef}>
-      {visibleLinks.map((link) => {
-        const active = pathname === link.href || (link.href !== '/dashboard' && pathname.startsWith(link.href));
-        const href = tenantId ? `${link.href}?tenantId=${encodeURIComponent(tenantId)}` : link.href;
-        return <Link aria-current={active ? 'page' : undefined} href={href} key={link.href}>{link.label}</Link>;
-      })}
-      <form className="network-nav-signout" action={signOutAction}><button type="submit">Sign out</button></form>
-    </nav>
+    <>
+      <nav className="network-nav" aria-label="Primary navigation">
+        <div className="network-nav-links">{visibleLinks.map((link) => <Link aria-current={isActive(link) ? 'page' : undefined} href={hrefFor(link)} key={link.href}>{link.label}</Link>)}</div>
+        <form className="network-nav-signout" action={signOutAction}><button type="submit">Sign out</button></form>
+      </nav>
+      <nav className="mobile-tab-bar" aria-label="Primary navigation">
+        {mobileLinks.map((link) => <Link aria-current={isActive(link) ? 'page' : undefined} href={hrefFor(link)} key={link.href}><span>{link.label}</span></Link>)}
+        <button type="button" className="mobile-tab-more" aria-expanded={menuOpen} aria-controls="mobile-navigation-sheet" onClick={() => setMenuOpen(true)}><span aria-hidden="true">•••</span><span>More</span></button>
+      </nav>
+      {menuOpen ? <div className="mobile-navigation-overlay" role="presentation"><button className="mobile-navigation-backdrop" type="button" aria-label="Close navigation" onClick={() => setMenuOpen(false)} /><section className="mobile-navigation-sheet" id="mobile-navigation-sheet" aria-label="All navigation"><div className="mobile-navigation-sheet-handle" /><div className="mobile-navigation-sheet-header"><strong>Navigate</strong><button type="button" aria-label="Close navigation" onClick={() => setMenuOpen(false)}>×</button></div><div className="mobile-navigation-links">{visibleLinks.map((link) => <Link aria-current={isActive(link) ? 'page' : undefined} href={hrefFor(link)} key={link.href}><span>{link.label}</span><b aria-hidden="true">›</b></Link>)}</div><form action={signOutAction}><button className="mobile-navigation-signout" type="submit">Sign out</button></form></section></div> : null}
+    </>
   );
 }

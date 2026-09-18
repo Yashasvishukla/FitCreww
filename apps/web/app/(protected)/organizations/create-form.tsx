@@ -6,6 +6,7 @@ type OrganizationCreateResponse = {
   readonly error?: string;
   readonly onboardingUrl?: string;
   readonly devInviteUrl?: string;
+  readonly deliveryError?: string | null;
 };
 
 export function OrganizationCreateForm({ tenantId }: { tenantId: string }) {
@@ -34,7 +35,7 @@ export function OrganizationCreateForm({ tenantId }: { tenantId: string }) {
       }
       form.reset();
       setInviteUrl(result.onboardingUrl ?? result.devInviteUrl ?? '');
-      setSuccessMessage('Organization created. The administrator received an email and the onboarding link is valid for 24 hours.');
+      setSuccessMessage(result.deliveryError ? 'Organization created. Email was not delivered; copy the onboarding link below.' : 'Organization created. The administrator received an email and the onboarding link is valid for 24 hours.');
       setState('complete');
       window.setTimeout(() => {
         router.refresh();
