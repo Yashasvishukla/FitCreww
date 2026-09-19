@@ -3,7 +3,7 @@
 import { useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 
-type Payable = { coachPartyId: string; coachName: string; amount: string; accrualCount: number; settleable: boolean };
+type Payable = { coachPartyId: string; coachName: string; amount: string; accrualCount: number; periodStart: string | null; periodEnd: string | null; settleable: boolean };
 type Accrual = { id: string; settlementId: string | null; kind: 'earning' | 'correction'; clientName: string; coachName: string; gross: string; commission: string; net: string; settled: boolean; createdAt: string };
 type Settlement = { id: string; coachName: string; periodStart: string; periodEnd: string; grossRevenue: string; commissionAmount: string; totalAmount: string; status: string; payslipMediaAssetId: string | null };
 type Data = { owner: boolean; payables: Payable[]; accruals: Accrual[]; settlements: Settlement[] };
@@ -12,6 +12,7 @@ type ActionState = 'idle' | 'submitting' | 'complete' | 'failed';
 const inr = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 });
 const amountOf = (value: string) => Number(value) || 0;
 const valueOf = (form: FormData, name: string) => String(form.get(name) ?? '').trim();
+const periodFor = (payable: Payable | undefined) => ({ periodStart: payable?.periodStart ?? '', periodEnd: payable?.periodEnd ?? '' });
 
 export function EarningsWorkspace({ tenantId, initial }: { tenantId: string; initial: Data }) {
   const router = useRouter();
@@ -21,6 +22,7 @@ export function EarningsWorkspace({ tenantId, initial }: { tenantId: string; ini
   const [busy, setBusy] = useState(false);
   const [selectedSettlementId, setSelectedSettlementId] = useState<string | null>(null);
   const [selectedCoachPartyId, setSelectedCoachPartyId] = useState(initial.payables.find((payable) => payable.settleable)?.coachPartyId ?? '');
+  const [payoutPeriod, setPayoutPeriod] = useState(() => periodFor(initial.payables.find((payable) => payable.settleable)));
   const totalPayable = initial.payables.reduce((sum, payable) => sum + amountOf(payable.amount), 0);
   const readyPayables = initial.payables.filter((payable) => payable.settleable);
   const openAccruals = initial.accruals.filter((row) => !row.settled);
@@ -100,18 +102,19 @@ export function EarningsWorkspace({ tenantId, initial }: { tenantId: string; ini
   return <div className="finance-workspace earnings-workspace">
     {initial.owner ? <>
       <section className="owner-payout-summary" aria-label="Coach payout overview">
-        <div><p className="eyebrow">To pay coaches</p><strong>{inr.format(totalPayable)}</strong><span>{readyPayables.length === 1 ? '1 coach is ready for payout' : `${readyPayables.length} coaches are ready for payout`}</span></div>
+        <div><p className="eyebrow">Confirmed earnings to pay</p><strong>{inr.format(totalPayable)}</strong><span>{readyPayables.length === 1 ? '1 coach is ready for payout' : `${readyPayables.length} coaches are ready for payout`}</span></div>
         <dl><div><dt>Awaiting transfer</dt><dd>{draftSettlements.length}</dd></div><div><dt>Payslips issued</dt><dd>{issued.length}</dd></div><div><dt>Open earnings</dt><dd>{openAccruals.length}</dd></div></dl>
       </section>
 
       <div className="owner-payout-flow">
         <section className="surface owner-payout-card">
-          <div className="owner-payout-card-heading"><div><p className="eyebrow">Step 1</p><h2>Prepare a coach payout</h2><p className="muted">Choose who you are paying and the earnings period. FitCrew calculates the payable amount automatically.</p></div>{selectedPayable ? <div className="owner-payout-amount"><span>Available now</span><strong>{inr.format(amountOf(selectedPayable.amount))}</strong></div> : null}</div>
+          <div className="owner-payout-card-heading"><div><p className="eyebrow">Step 1</p><h2>Prepare a coach payout</h2><p className="muted">The earnings period is filled from each confirmed client payment. Only confirmed collections are included, and the payout amount is calculated automatically.</p></div>{selectedPayable ? <div className="owner-payout-amount"><span>Available now</span><strong>{inr.format(amountOf(selectedPayable.amount))}</strong><small>{selectedPayable.accrualCount} confirmed earning{selectedPayable.accrualCount === 1 ? '' : 's'}</small></div> : null}</div>
           <form className="finance-form owner-payout-form" onSubmit={create} noValidate>
-            <label><span>Coach and payable amount</span><select name="coachPartyId" required value={selectedCoachPartyId} {...invalidProps('coachPartyId')} onChange={(event) => { setSelectedCoachPartyId(event.currentTarget.value); clearField('coachPartyId'); }}>{readyPayables.length ? readyPayables.map((row) => <option key={row.coachPartyId} value={row.coachPartyId}>{row.coachName} — {inr.format(amountOf(row.amount))} available</option>) : <option value="">No coach is ready to settle</option>}</select><FieldError id="coachPartyId-error" message={fieldErrors.coachPartyId} /></label>
+            <label><span>Coach and payable amount</span><select name="coachPartyId" required value={selectedCoachPartyId} {...invalidProps('coachPartyId')} onChange={(event) => { const coachPartyId = event.currentTarget.value; setSelectedCoachPartyId(coachPartyId); setPayoutPeriod(periodFor(readyPayables.find((payable) => payable.coachPartyId === coachPartyId))); clearField('coachPartyId'); }}>{readyPayables.length ? readyPayables.map((row) => <option key={row.coachPartyId} value={row.coachPartyId}>{row.coachName} — {inr.format(amountOf(row.amount))} available</option>) : <option value="">No coach is ready to settle</option>}</select><FieldError id="coachPartyId-error" message={fieldErrors.coachPartyId} /></label>
             <label><span>Payment method</span><select name="method" {...invalidProps('method')}><option value="upi">UPI</option><option value="qr">QR</option><option value="phone">Phone</option><option value="other">Other</option></select><FieldError id="method-error" message={fieldErrors.method} /></label>
-            <label><span>Earnings from</span><input name="periodStart" type="date" required {...invalidProps('periodStart')} /><FieldError id="periodStart-error" message={fieldErrors.periodStart} /></label>
-            <label><span>Earnings to</span><input name="periodEnd" type="date" required {...invalidProps('periodEnd')} /><FieldError id="periodEnd-error" message={fieldErrors.periodEnd} /></label>
+            <label><span>Earnings from</span><input name="periodStart" type="date" required value={payoutPeriod.periodStart} {...invalidProps('periodStart')} onChange={(event) => { setPayoutPeriod((period) => ({ ...period, periodStart: event.currentTarget.value })); clearField('periodStart'); }} /><FieldError id="periodStart-error" message={fieldErrors.periodStart} /></label>
+            <label><span>Earnings to</span><input name="periodEnd" type="date" required value={payoutPeriod.periodEnd} {...invalidProps('periodEnd')} onChange={(event) => { setPayoutPeriod((period) => ({ ...period, periodEnd: event.currentTarget.value })); clearField('periodEnd'); }} /><FieldError id="periodEnd-error" message={fieldErrors.periodEnd} /></label>
+            <p className="payout-period-hint">✓ Dates are pre-filled from confirmed payment durations. You can adjust them before preparing the payout.</p>
             <button className="primary-button" disabled={busy || !readyPayables.length} data-state={stateOf('create-settlement')} aria-busy={stateOf('create-settlement') === 'submitting'}>{stateOf('create-settlement') === 'submitting' ? 'Preparing payout' : 'Prepare payout'}</button>
           </form>
         </section>

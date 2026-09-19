@@ -12,12 +12,12 @@ type Tx = Prisma.TransactionClient;
 export type PayoutHandleInput = { partyId: string; type: 'upi' | 'phone' | 'qr'; value: string; label?: string; isDefault?: boolean };
 export type UpdatePayoutHandleInput = PayoutHandleInput & { handleId: string };
 type PaymentMethodInput = 'upi' | 'qr' | 'phone' | 'razorpay' | 'other';
-export type RecordClientPaymentInput = { subscriptionId: string; amount: string | number; method: PaymentMethodInput };
+export type RecordClientPaymentInput = { subscriptionId: string; amount?: string | number; method: PaymentMethodInput };
 export type RecordOrganizationPaymentInput = { organizationId: string; amount: string | number; method: PaymentMethodInput };
 export type ConfirmPaymentInput = { paymentId: string; utr?: string; proofMediaAssetId?: string };
 export type ConfirmRazorpayPaymentInput = { paymentId: string; razorpayOrderId: string; razorpayPaymentId: string; razorpaySignature: string };
 export type ConfirmRazorpayWebhookInput = { rawBody: string; signature: string };
-export type CreateRazorpayOrderInput = ({ kind: 'client'; subscriptionId: string } | { kind: 'organization'; organizationId: string }) & { amount: string | number };
+export type CreateRazorpayOrderInput = { kind: 'client'; subscriptionId: string } | { kind: 'organization'; organizationId: string; amount: string | number };
 type RazorpayOrderResult = {
   keyId: string;
   paymentId: string;
@@ -75,18 +75,17 @@ export async function updatePayoutHandleForUser(client: PrismaClient, tenantId: 
 export async function recordClientPaymentForUser(client: PrismaClient, tenantId: string, userId: string, input: RecordClientPaymentInput) {
   return withTenant(client as never, tenantId, async (tx: Tx) => {
     const principal = await requirePrincipal(tx, tenantId, userId);
-    const subscription = await tx.subscription.findFirst({ where: { id: input.subscriptionId }, include: { client: { include: { currentCoachAssignment: true } } } });
+    const subscription = await tx.subscription.findFirst({ where: { id: input.subscriptionId }, include: { payments: true, client: { include: { currentCoachAssignment: true } } } });
     const assignment = subscription?.client.currentCoachAssignment;
     if (!subscription || !assignment || !(await accessGateForPrincipal(tx, principal).can(principal, 'create', { type: 'payment', tenantId, coachPartyId: assignment.coachPartyId, organizationId: subscription.client.organizationId ?? undefined }))) throw new PaymentRecordingError('Forbidden.');
     const owner = effectiveAssignments(principal).some((assignment) => assignment.role === 'OwnerAdmin' && assignment.scopeType === 'tenant')
       ? await tx.party.findFirst({ where: { id: principal.partyId, status: 'active' } })
       : (await tx.engagement.findFirst({ where: { downstreamPartyId: assignment.coachPartyId, validTo: null }, include: { upstreamParty: true }, orderBy: { validFrom: 'desc' } }))?.upstreamParty;
     if (!owner) throw new PaymentRecordingError('Tenant owner was not found.');
-    const amount = Money.inr(input.amount);
-    if (amount.amountMinor <= 0n) throw new PaymentRecordingError('Payment amount must be positive.');
-    const payment = await tx.paymentRecord.create({ data: { tenantId, payerPartyId: subscription.client.partyId, payeePartyId: owner.id, subscriptionId: subscription.id, purpose: 'client_subscription', amount: amount.toString(), method: input.method, status: 'pending' } });
-    await audit(tx, tenantId, principal.partyId, 'create', 'payment', payment.id, { status: 'pending', amount: amount.toString(), subscriptionId: subscription.id });
-    return { id: payment.id, status: payment.status, amount: payment.amount.toString() };
+    const due = nextSubscriptionInstallment(subscription);
+    const payment = await tx.paymentRecord.create({ data: { tenantId, payerPartyId: subscription.client.partyId, payeePartyId: owner.id, subscriptionId: subscription.id, purpose: 'client_subscription', amount: due.amount, method: input.method, status: 'pending', installmentNumber: due.installmentNumber, billingPeriodStart: due.periodStart, billingPeriodEnd: due.periodEnd } });
+    await audit(tx, tenantId, principal.partyId, 'create', 'payment', payment.id, { status: 'pending', amount: payment.amount.toString(), subscriptionId: subscription.id, installmentNumber: due.installmentNumber, billingPeriodStart: isoDate(due.periodStart), billingPeriodEnd: isoDate(due.periodEnd), billingCadence: subscription.billingCadence });
+    return { id: payment.id, status: payment.status, amount: payment.amount.toString(), installmentNumber: due.installmentNumber, billingPeriodStart: isoDate(due.periodStart), billingPeriodEnd: isoDate(due.periodEnd) };
   });
 }
 
@@ -112,7 +111,7 @@ export async function recordOrganizationPaymentForUser(client: PrismaClient, ten
 
 export async function createRazorpayOrderForUser(client: PrismaClient, tenantId: string, userId: string, input: CreateRazorpayOrderInput): Promise<RazorpayOrderResult> {
   const pending = input.kind === 'client'
-    ? await recordClientPaymentForUser(client, tenantId, userId, { subscriptionId: input.subscriptionId, amount: input.amount, method: 'razorpay' })
+    ? await recordClientPaymentForUser(client, tenantId, userId, { subscriptionId: input.subscriptionId, method: 'razorpay' })
     : await recordOrganizationPaymentForUser(client, tenantId, userId, { organizationId: input.organizationId, amount: input.amount, method: 'razorpay' });
   const order = await createRazorpayOrder({ paymentId: pending.id, amountMinor: decimalToMinor(pending.amount), tenantId });
   await withTenant(client as never, tenantId, async (tx: Tx) => {
@@ -138,14 +137,20 @@ export async function createRazorpayOrderForUser(client: PrismaClient, tenantId:
 
 export async function confirmRazorpayPaymentForUser(client: PrismaClient, tenantId: string, userId: string, input: ConfirmRazorpayPaymentInput) {
   return withTenant(client as never, tenantId, async (tx: Tx) => {
-    const principal = await requireOwner(tx, tenantId, userId);
+    const actor = await requirePrincipal(tx, tenantId, userId);
     const payment = await tx.paymentRecord.findFirst({ where: { id: input.paymentId, gatewayProvider: 'razorpay', gatewayOrderId: input.razorpayOrderId }, include: { subscription: { include: { client: { include: { currentCoachAssignment: true } } } } } });
     if (!payment || payment.status !== 'pending') throw new PaymentRecordingError('Razorpay payment is unavailable for confirmation.');
+    const assignment = payment.subscription?.client.currentCoachAssignment;
+    const allowed = payment.purpose === 'org_agreement'
+      ? effectiveAssignments(actor).some((assignment) => assignment.role === 'OwnerAdmin' && assignment.scopeType === 'tenant')
+      : assignment && await accessGateForPrincipal(tx, actor).can(actor, 'create', { type: 'payment', tenantId, coachPartyId: assignment.coachPartyId, organizationId: payment.subscription?.client.organizationId ?? undefined });
+    if (!allowed) throw new PaymentRecordingError('Forbidden.');
     verifyRazorpaySignature(input);
     await verifyCapturedRazorpayPayment(input.razorpayPaymentId, {
       orderId: input.razorpayOrderId,
       amountMinor: decimalToMinor(payment.amount.toString()),
     });
+    const principal = await gatewayOwnerPrincipal(tx, tenantId, payment.payeePartyId);
     return confirmPaymentTx(tx, tenantId, principal, payment, {
       source: 'gateway',
       confirmedAt: new Date(),
@@ -246,7 +251,7 @@ export async function updateRefundClawbackRateForUser(client: PrismaClient, tena
   return withTenant(client as never, tenantId, async (tx: Tx) => { const principal = await requireOwner(tx, tenantId, userId); const value = Number(rate); if (!Number.isFinite(value) || value < 0 || value > 100) throw new PaymentRecordingError('Refund claw-back rate must be between 0 and 100%.'); const result = await tx.tenantConfig.updateMany({ where: { tenantId }, data: { refundCoachClawbackRate: value.toFixed(2) } }); if (result.count !== 1) throw new PaymentRecordingError('Money configuration was not updated.'); const updated = await tx.tenantConfig.findFirstOrThrow({ where: { tenantId } }); await audit(tx, tenantId, principal.partyId, 'update', 'money_config', tenantId, { refundCoachClawbackRate: updated.refundCoachClawbackRate.toString() }); return { refundCoachClawbackRate: updated.refundCoachClawbackRate.toString() }; });
 }
 
-export async function getMoneyWorkspaceForUser(client: PrismaClient, tenantId: string, userId: string) {
+export async function getMoneyWorkspaceForUser(client: PrismaClient, tenantId: string, userId: string, reportingMonth?: string) {
   return withTenant(client as never, tenantId, async (tx: Tx) => {
     const principal = await requirePrincipal(tx, tenantId, userId);
     const ownerAccess = effectiveAssignments(principal).some((assignment) => assignment.role === 'OwnerAdmin' && assignment.scopeType === 'tenant');
@@ -255,28 +260,56 @@ export async function getMoneyWorkspaceForUser(client: PrismaClient, tenantId: s
       : (await tx.engagement.findFirst({ where: { downstreamPartyId: principal.partyId, validTo: null }, include: { upstreamParty: true }, orderBy: { validFrom: 'desc' } }))?.upstreamParty;
     if (!owner) throw new PaymentRecordingError('Tenant owner was not found.');
     const paymentWhere = ownerAccess ? { tenantId } : { tenantId, subscription: { client: { currentCoachAssignment: { coachPartyId: principal.partyId } } } };
+    const period = reportingPeriod(reportingMonth);
     const [handles, payments, subscriptions, organizations, config] = await Promise.all([
       tx.payoutHandle.findMany({ where: ownerAccess ? { tenantId } : { tenantId, partyId: { in: [owner.id, principal.partyId] } }, include: { party: true }, orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }] }),
-      tx.paymentRecord.findMany({ where: paymentWhere, include: { payer: { include: { enrolledClients: { include: { currentCoachAssignment: { include: { coachParty: true } } } } } }, payee: true, commissionAccruals: true, subscription: { include: { client: { include: { party: true, currentCoachAssignment: { include: { coachParty: true } } } } } } }, orderBy: { createdAt: 'desc' }, take: 100 }),
+      tx.paymentRecord.findMany({ where: { ...paymentWhere, OR: [{ createdAt: { gte: period.start, lt: period.end } }, { confirmedAt: { gte: period.start, lt: period.end } }] }, include: { payer: { include: { enrolledClients: { include: { currentCoachAssignment: { include: { coachParty: true } } } } } }, payee: true, commissionAccruals: true, subscription: { include: { client: { include: { party: true, currentCoachAssignment: { include: { coachParty: true } } } } } } }, orderBy: { createdAt: 'desc' }, take: 250 }),
       tx.subscription.findMany({ where: ownerAccess
-        ? { tenantId, status: 'active', payments: { none: { purpose: 'client_subscription', status: { in: ['pending', 'confirmed'] } } } }
-        : { tenantId, status: 'active', client: { currentCoachAssignment: { coachPartyId: principal.partyId } }, payments: { none: { purpose: 'client_subscription', status: { in: ['pending', 'confirmed'] } } } }, include: { client: { include: { party: true, currentCoachAssignment: { include: { coachParty: true } } } } }, orderBy: { endDate: 'desc' } }),
+        ? { tenantId, status: 'active' }
+        : { tenantId, status: 'active', client: { currentCoachAssignment: { coachPartyId: principal.partyId } } }, include: { payments: true, client: { include: { party: true, currentCoachAssignment: { include: { coachParty: true } } } } }, orderBy: { endDate: 'desc' } }),
       ownerAccess ? tx.organization.findMany({ where: { tenantId, status: 'active' }, include: { party: true }, orderBy: { createdAt: 'desc' } }) : Promise.resolve([]),
       tx.tenantConfig.findFirstOrThrow({ where: { tenantId } }),
     ]);
-    // A subscription can be collected only once. Once a collection is in progress or
-    // confirmed, keep it out of the coach's collection picker; its payment remains
-    // available in the status/history views. A reversal makes the subscription
-    // collectible again.
-    const collectedSubscriptionIds = new Set(payments
-      .filter((payment) => payment.purpose === 'client_subscription' && payment.status !== 'reversed' && payment.subscriptionId)
-      .map((payment) => payment.subscriptionId));
+    const scheduledSubscriptions = subscriptions.flatMap((subscription) => {
+      const due = installmentInPeriod(subscription, period);
+      if (!due) return [];
+      const payment = subscription.payments.find((row) => row.purpose === 'client_subscription' && row.installmentNumber === due.installmentNumber && row.status !== 'reversed');
+      let canCollect = false;
+      try {
+        const next = nextSubscriptionInstallment(subscription);
+        canCollect = next.installmentNumber === due.installmentNumber && period.start <= new Date();
+      } catch {
+        // A fully collected plan remains visible in its scheduled month.
+      }
+      const paymentStatus: 'unpaid' | 'pending' | 'confirmed' = payment?.status === 'confirmed' ? 'confirmed' : payment?.status === 'pending' ? 'pending' : 'unpaid';
+      return [{ subscription, due, paymentStatus, canCollect }];
+    });
 
-    return { ownerAccess, principalPartyId: principal.partyId, ownerPartyId: owner.id, refundCoachClawbackRate: config.refundCoachClawbackRate.toString(), handles: handles.map((h) => ({ id: h.id, partyId: h.partyId, partyName: h.party.displayName, type: h.type, value: h.value, label: h.label, isDefault: h.isDefault })), payments: payments.map((p) => { const accrual = p.commissionAccruals[0]; const coachName = p.subscription?.client.currentCoachAssignment?.coachParty.displayName ?? p.payer.enrolledClients[0]?.currentCoachAssignment?.coachParty.displayName ?? (p.purpose === 'coach_payout' ? p.payee.displayName : null); return { id: p.id, purpose: p.purpose, reversesPaymentId: p.reversesPaymentId, clientName: p.subscription?.client.party.displayName ?? p.payer.displayName, coachName, amount: p.amount.toString(), method: p.method, status: p.status, utr: p.utr, gatewayProvider: p.gatewayProvider, gatewayOrderId: p.gatewayOrderId, createdAt: p.createdAt.toISOString(), confirmedAt: p.confirmedAt?.toISOString() ?? null, accrual: accrual ? { kind: accrual.kind, commissionAmount: accrual.commissionAmount.toString(), coachPayableAmount: accrual.coachPayableAmount.toString(), rateApplied: accrual.rateApplied.toString(), withinLifespan: accrual.withinLifespan, windowEndAt: accrual.windowEndAt.toISOString() } : null }; }), subscriptions: subscriptions.filter((subscription) => !collectedSubscriptionIds.has(subscription.id)).map((s) => ({ id: s.id, clientName: s.client.party.displayName, coachName: s.client.currentCoachAssignment?.coachParty.displayName ?? null, price: s.price.toString() })), organizations: organizations.map((organization) => ({ id: organization.id, name: organization.party.displayName })) };
+    const subscriptionSummary = (subscription: SubscriptionPlan) => {
+      const confirmed = subscription.payments.filter((payment) => payment.purpose === 'client_subscription' && payment.status === 'confirmed');
+      const confirmedMinor = confirmed.reduce((total, payment) => total + decimalToMinor(payment.amount.toString()), 0n);
+      const count = installmentCount(subscription);
+      return { confirmedInstallmentCount: new Set(confirmed.map((payment) => payment.installmentNumber).filter((number): number is number => number !== null)).size, installmentCount: count, remainingInstallmentCount: count - new Set(confirmed.map((payment) => payment.installmentNumber).filter((number): number is number => number !== null)).size, remainingBalance: minorUnitsToAmount(decimalToMinor(subscription.totalContractValue.toString()) - confirmedMinor) };
+    };
+    const plan = (subscription: SubscriptionPlan) => ({ id: subscription.id, clientName: subscription.client.party.displayName, coachName: subscription.client.currentCoachAssignment?.coachParty.displayName ?? null, billingCadence: subscription.billingCadence, totalContractValue: subscription.totalContractValue.toString(), installmentAmount: subscription.installmentAmount.toString(), durationMonths: subscription.durationMonths, ...subscriptionSummary(subscription) });
+    return { ownerAccess, principalPartyId: principal.partyId, ownerPartyId: owner.id, reportingPeriod: { key: period.key, label: period.label, start: period.start.toISOString(), end: period.end.toISOString() }, refundCoachClawbackRate: config.refundCoachClawbackRate.toString(), handles: handles.map((h) => ({ id: h.id, partyId: h.partyId, partyName: h.party.displayName, type: h.type, value: h.value, label: h.label, isDefault: h.isDefault })), payments: payments.map((p) => { const accrual = p.commissionAccruals[0]; const coachName = p.subscription?.client.currentCoachAssignment?.coachParty.displayName ?? p.payer.enrolledClients[0]?.currentCoachAssignment?.coachParty.displayName ?? (p.purpose === 'coach_payout' ? p.payee.displayName : null); return { id: p.id, subscriptionId: p.subscriptionId, purpose: p.purpose, reversesPaymentId: p.reversesPaymentId, clientName: p.subscription?.client.party.displayName ?? p.payer.displayName, coachName, amount: p.amount.toString(), method: p.method, status: p.status, utr: p.utr, gatewayProvider: p.gatewayProvider, gatewayOrderId: p.gatewayOrderId, installmentNumber: p.installmentNumber, billingPeriodStart: p.billingPeriodStart?.toISOString() ?? null, billingPeriodEnd: p.billingPeriodEnd?.toISOString() ?? null, createdAt: p.createdAt.toISOString(), confirmedAt: p.confirmedAt?.toISOString() ?? null, accrual: accrual ? { kind: accrual.kind, commissionAmount: accrual.commissionAmount.toString(), coachPayableAmount: accrual.coachPayableAmount.toString(), rateApplied: accrual.rateApplied.toString(), withinLifespan: accrual.withinLifespan, windowEndAt: accrual.windowEndAt.toISOString() } : null }; }), subscriptions: subscriptions.map(plan), collectionsDue: scheduledSubscriptions.map(({ subscription, due, paymentStatus, canCollect }) => ({ ...plan(subscription), price: due.amount, installmentNumber: due.installmentNumber, billingPeriodStart: isoDate(due.periodStart), billingPeriodEnd: isoDate(due.periodEnd), paymentStatus, canCollect })), organizations: organizations.map((organization) => ({ id: organization.id, name: organization.party.displayName })) };
   });
 }
 
+function reportingPeriod(value?: string) {
+  const match = value?.match(/^(\d{4})-(\d{2})$/);
+  const now = new Date();
+  const year = match ? Number(match[1]) : now.getUTCFullYear();
+  const month = match ? Number(match[2]) : now.getUTCMonth() + 1;
+  if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) return reportingPeriod();
+  const start = new Date(Date.UTC(year, month - 1, 1));
+  const end = new Date(Date.UTC(year, month, 1));
+  return { key: `${year}-${String(month).padStart(2, '0')}`, label: new Intl.DateTimeFormat('en-IN', { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(start), start, end };
+}
+
 type PaymentWithConfirmationRelations = Prisma.PaymentRecordGetPayload<{ include: { subscription: { include: { client: { include: { currentCoachAssignment: true } } } } } }>;
+type SubscriptionWithPayments = Prisma.SubscriptionGetPayload<{ include: { payments: true } }>;
+type SubscriptionPlan = Prisma.SubscriptionGetPayload<{ include: { payments: true; client: { include: { party: true; currentCoachAssignment: { include: { coachParty: true } } } } } }>;
 
 async function confirmPaymentTx(tx: Tx, tenantId: string, principal: Awaited<ReturnType<typeof requirePrincipal>>, payment: PaymentWithConfirmationRelations, confirmation: { source: 'manual' | 'gateway'; confirmedAt: Date; utr: string | null; proofMediaAssetId: string | null }, gateway?: { gatewayProvider: string; gatewayOrderId: string; gatewayPaymentId: string; gatewaySignature: string | null }) {
   const subscription = payment.subscription;
@@ -309,7 +342,7 @@ function minorUnitsToAmount(value: bigint): string { return `${value / 100n}.${(
 function amountSigned(value: bigint): string { const sign = value < 0n ? '-' : ''; const absolute = value < 0n ? -value : value; return `${sign}${absolute / 100n}.${(absolute % 100n).toString().padStart(2, '0')}`; }
 function divideRoundHalfUp(numerator: bigint, denominator: bigint): bigint { return (numerator + denominator / 2n) / denominator; }
 const LOCAL_MOCK_RAZORPAY_SECRET = 'fitcrew-local-mock-checkout-only';
-function localMockCheckoutEnabled() { return process.env.NODE_ENV === 'development' && process.env.PAYMENT_GATEWAY_MODE === 'mock'; }
+function localMockCheckoutEnabled() { return process.env.NODE_ENV === 'development'; }
 function razorpayConfig() {
   if (localMockCheckoutEnabled()) return { keyId: 'rzp_test_fitcrew_local_mock', keySecret: LOCAL_MOCK_RAZORPAY_SECRET };
   const keyId = process.env.RAZORPAY_KEY_ID?.trim(); const keySecret = process.env.RAZORPAY_KEY_SECRET?.trim();
@@ -382,6 +415,37 @@ function parseRazorpayWebhook(rawBody: string): ParsedRazorpayWebhook | null {
     capturedAt: payment.created_at ? new Date(payment.created_at * 1_000) : new Date(),
   };
 }
+function nextSubscriptionInstallment(subscription: SubscriptionWithPayments) {
+  const count = installmentCount(subscription);
+  const collected = new Set(subscription.payments.filter((payment) => payment.purpose === 'client_subscription' && payment.status !== 'reversed' && payment.installmentNumber !== null).map((payment) => payment.installmentNumber!));
+  const installmentNumber = Array.from({ length: count }, (_, index) => index + 1).find((number) => !collected.has(number));
+  if (!installmentNumber) throw new PaymentRecordingError('All installments for this subscription are already collected.');
+  const amountMinor = installmentAmountMinor(subscription, installmentNumber, count);
+  const periodStart = subscription.billingCadence === 'monthly' ? addMonths(subscription.startDate, installmentNumber - 1) : subscription.startDate;
+  const periodEnd = subscription.billingCadence === 'monthly' ? addDays(addMonths(subscription.startDate, installmentNumber), -1) : subscription.endDate;
+  return { installmentNumber, amount: minorUnitsToAmount(amountMinor), periodStart, periodEnd };
+}
+function installmentInPeriod(subscription: SubscriptionWithPayments, period: { start: Date; end: Date }) {
+  const count = installmentCount(subscription);
+  const installmentNumber = Array.from({ length: count }, (_, index) => index + 1).find((number) => {
+    const start = subscription.billingCadence === 'monthly' ? addMonths(subscription.startDate, number - 1) : subscription.startDate;
+    return start >= period.start && start < period.end;
+  });
+  if (!installmentNumber) return null;
+  const periodStart = subscription.billingCadence === 'monthly' ? addMonths(subscription.startDate, installmentNumber - 1) : subscription.startDate;
+  const periodEnd = subscription.billingCadence === 'monthly' ? addDays(addMonths(subscription.startDate, installmentNumber), -1) : subscription.endDate;
+  return { installmentNumber, amount: minorUnitsToAmount(installmentAmountMinor(subscription, installmentNumber, count)), periodStart, periodEnd };
+}
+function installmentCount(subscription: Pick<SubscriptionWithPayments, 'billingCadence' | 'durationMonths'>) { return subscription.billingCadence === 'monthly' ? subscription.durationMonths : 1; }
+function installmentAmountMinor(subscription: Pick<SubscriptionWithPayments, 'billingCadence' | 'installmentAmount' | 'totalContractValue'>, installmentNumber: number, count: number) {
+  const total = decimalToMinor(subscription.totalContractValue.toString());
+  if (subscription.billingCadence !== 'monthly') return total;
+  const regular = decimalToMinor(subscription.installmentAmount.toString());
+  return installmentNumber === count ? total - (regular * BigInt(count - 1)) : regular;
+}
+function addMonths(date: Date, months: number) { const copy = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate())); copy.setUTCMonth(copy.getUTCMonth() + months); return copy; }
+function addDays(date: Date, days: number) { const copy = new Date(date); copy.setUTCDate(copy.getUTCDate() + days); return copy; }
+function isoDate(value: Date) { return value.toISOString().slice(0, 10); }
 async function validateProof(tx: Tx, proofMediaAssetId: string | null) { if (proofMediaAssetId && !(await tx.mediaAsset.findFirst({ where: { id: proofMediaAssetId, status: 'active' } }))) throw new PaymentRecordingError('Payment proof was not found.'); }
 async function accrueCommission(tx: Tx, tenantId: string, paymentId: string, ownerPartyId: string, clientId: string, assignmentId: string, coachPartyId: string, grossAmountMinor: bigint, confirmedAt: Date): Promise<CommissionResult | null> {
   if (ownerPartyId === coachPartyId) return null;

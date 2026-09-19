@@ -153,7 +153,7 @@ describe('tenancy core RLS', () => {
       await tx.client.create({ data: { id: clientId, tenantId, partyId: clientPartyId, enrolledByPartyId: ownerId, customPrice: '3000.00' } });
       await tx.clientCoachAssignment.create({ data: { id: assignmentId, tenantId, clientId, coachPartyId: coachId, assignedByPartyId: ownerId, validFrom: new Date('2026-01-01') } });
       await tx.client.updateMany({ where: { id: clientId }, data: { currentCoachAssignmentId: assignmentId } });
-      await tx.subscription.create({ data: { id: subscriptionId, tenantId, clientId, price: '3000.00', startDate: new Date('2026-09-01'), durationMonths: 1, endDate: new Date('2026-09-30') } });
+      await tx.subscription.create({ data: { id: subscriptionId, tenantId, clientId, price: '3000.00', totalContractValue: '3000.00', installmentAmount: '3000.00', startDate: new Date('2026-09-01'), durationMonths: 1, endDate: new Date('2026-09-30') } });
     });
     const temporaryHandle = await savePayoutHandleForUser(appPrisma, tenantId, userId, { partyId: ownerId, type: 'phone', value: '+919876543210' });
     await updatePayoutHandleForUser(appPrisma, tenantId, userId, { handleId: temporaryHandle.id, partyId: ownerId, type: 'upi', value: 'owner.secondary@okbank', label: 'Secondary' });
@@ -179,8 +179,8 @@ describe('tenancy core RLS', () => {
     await expect(confirmPaymentForUser(appPrisma, tenantId, userId, { paymentId: pending.id, utr: 'UTR999999' })).rejects.toThrow('unavailable');
     const secondPending = await recordClientPaymentForUser(appPrisma, tenantId, userId, { subscriptionId, amount: '1500.00', method: 'upi' });
     await confirmPaymentForUser(appPrisma, tenantId, userId, { paymentId: secondPending.id, utr: 'UTRSECOND123' });
-    const paidOn = confirmed.confirmedAt.slice(0, 10); const storage = new MemoryPrivateBlobStorage();
-    const batch = await createSettlementForUser(appPrisma, tenantId, userId, { coachPartyId: coachId, periodStart: paidOn, periodEnd: paidOn, method: 'upi' });
+    const settlementPeriodStart = pending.billingPeriodStart; const settlementPeriodEnd = pending.billingPeriodEnd; const storage = new MemoryPrivateBlobStorage();
+    const batch = await createSettlementForUser(appPrisma, tenantId, userId, { coachPartyId: coachId, periodStart: settlementPeriodStart, periodEnd: settlementPeriodEnd, method: 'upi' });
     expect(batch).toMatchObject({ accrualCount: 2, totalAmount: '3600.00', status: 'draft' });
     const paid = await confirmSettlementForUser(appPrisma, tenantId, userId, { settlementId: batch.id, utr: 'PAYOUT123456' }, storage);
     expect(paid.status).toBe('paid');
@@ -229,7 +229,7 @@ describe('tenancy core RLS', () => {
 
     const nextPayment = await recordClientPaymentForUser(appPrisma, tenantId, userId, { subscriptionId, amount: '4500.00', method: 'upi' });
     await confirmPaymentForUser(appPrisma, tenantId, userId, { paymentId: nextPayment.id, utr: 'NEXTCYCLE1234' });
-    const nextBatch = await createSettlementForUser(appPrisma, tenantId, userId, { coachPartyId: coachId, periodStart: paidOn, periodEnd: paidOn, method: 'upi' });
+    const nextBatch = await createSettlementForUser(appPrisma, tenantId, userId, { coachPartyId: coachId, periodStart: settlementPeriodStart, periodEnd: settlementPeriodEnd, method: 'upi' });
     expect(nextBatch).toMatchObject({ accrualCount: 2, totalAmount: '1200.00' });
     const nextPaid = await confirmSettlementForUser(appPrisma, tenantId, userId, { settlementId: nextBatch.id, utr: 'NEXTPAYOUT123' }, storage);
     const nextPayslip = await withTenant(appPrisma, tenantId, (tx) => tx.payslip.findFirstOrThrow({ where: { settlementId: nextBatch.id } }));

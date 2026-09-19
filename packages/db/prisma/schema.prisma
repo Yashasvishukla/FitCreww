@@ -545,6 +545,9 @@ model Subscription {
   tenantId               String             @map("tenant_id") @db.Uuid
   clientId               String             @map("client_id") @db.Uuid
   price                  Decimal            @db.Decimal(12, 2)
+  billingCadence         BillingCadence     @default(upfront) @map("billing_cadence")
+  totalContractValue     Decimal            @map("total_contract_value") @db.Decimal(12, 2)
+  installmentAmount      Decimal            @map("installment_amount") @db.Decimal(12, 2)
   startDate              DateTime           @map("start_date") @db.Date
   durationMonths         Int                @map("duration_months")
   endDate                DateTime           @map("end_date") @db.Date
@@ -828,6 +831,9 @@ model PaymentRecord {
   amount             Decimal                    @db.Decimal(18, 2)
   method             PaymentMethod
   status             PaymentStatus              @default(pending)
+  billingPeriodStart DateTime?                  @map("billing_period_start") @db.Date
+  billingPeriodEnd   DateTime?                  @map("billing_period_end") @db.Date
+  installmentNumber  Int?                       @map("installment_number")
   gatewayProvider    String?                    @map("gateway_provider")
   gatewayOrderId     String?                    @map("gateway_order_id")
   gatewayPaymentId   String?                    @map("gateway_payment_id")
@@ -854,6 +860,7 @@ model PaymentRecord {
   @@unique([id, tenantId])
   @@unique([tenantId, gatewayOrderId])
   @@unique([tenantId, gatewayPaymentId])
+  @@index([tenantId, subscriptionId, installmentNumber])
   @@index([tenantId, status, createdAt])
   @@index([tenantId, payerPartyId, createdAt])
   @@map("payment_record")
@@ -1175,6 +1182,13 @@ enum PaymentStatus {
 enum PaymentConfirmationSource {
   manual
   gateway
+
+  @@schema("public")
+}
+
+enum BillingCadence {
+  upfront
+  monthly
 
   @@schema("public")
 }
