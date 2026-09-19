@@ -17,7 +17,12 @@ export async function createSettlementForUser(client: PrismaClient, tenantId: st
     if (periodEnd < periodStart) throw new SettlementError('Settlement period end cannot precede its start.');
     const coach = await tx.party.findFirst({ where: { id: input.coachPartyId, status: 'active' } }); if (!coach) throw new SettlementError('Coach was not found.');
     const endExclusive = new Date(periodEnd); endExclusive.setUTCDate(endExclusive.getUTCDate() + 1);
-    const accruals = await tx.commissionAccrual.findMany({ where: { settlementId: null, coachAssignment: { coachPartyId: coach.id }, payment: { confirmedAt: { gte: periodStart, lt: endExclusive } } }, orderBy: { createdAt: 'asc' } });
+    const accruals = await tx.commissionAccrual.findMany({ where: { settlementId: null, coachAssignment: { coachPartyId: coach.id }, payment: { OR: [
+      { billingPeriodStart: { not: null, lte: periodEnd }, billingPeriodEnd: { not: null, gte: periodStart } },
+      // Older records may not have a subscription period; preserve the original
+      // confirmation-date behaviour for those records.
+      { billingPeriodStart: null, confirmedAt: { gte: periodStart, lt: endExclusive } },
+    ] } }, orderBy: { createdAt: 'asc' } });
     if (!accruals.length) throw new SettlementError('No unsettled coach earnings exist in this period.');
     const grossMinor = sum(accruals.map((a) => decimalToMinor(a.grossAmount.toString()))); const commissionMinor = sum(accruals.map((a) => decimalToMinor(a.commissionAmount.toString()))); const netMinor = sum(accruals.map((a) => decimalToMinor(a.coachPayableAmount.toString())));
     if (netMinor <= 0n) throw new SettlementError('Settlement total must be positive.');
@@ -62,12 +67,21 @@ export async function getEarningsForUser(client: PrismaClient, tenantId: string,
     const assignments = effectiveAssignments(principal); const owner = assignments.some((assignment) => assignment.role === 'OwnerAdmin' && assignment.scopeType === 'tenant'); const coachIds = owner ? undefined : [principal.partyId];
     if (!owner && !assignments.some((assignment) => assignment.role === 'Coach')) throw new SettlementError('Forbidden.');
     const [accruals, settlements] = await Promise.all([
-      tx.commissionAccrual.findMany({ where: coachIds ? { coachAssignment: { coachPartyId: { in: coachIds } } } : { tenantId }, include: { coachAssignment: { include: { coachParty: true } }, client: { include: { party: true } } }, orderBy: { createdAt: 'desc' } }),
+      tx.commissionAccrual.findMany({ where: coachIds ? { coachAssignment: { coachPartyId: { in: coachIds } } } : { tenantId }, include: { coachAssignment: { include: { coachParty: true } }, client: { include: { party: true } }, payment: { select: { billingPeriodStart: true, billingPeriodEnd: true, confirmedAt: true } } }, orderBy: { createdAt: 'desc' } }),
       tx.settlement.findMany({ where: coachIds ? { coachPartyId: { in: coachIds } } : { tenantId }, include: { coachParty: true, payslip: true }, orderBy: { periodEnd: 'desc' } }),
     ]);
-    const payables = new Map<string, { coachPartyId: string; coachName: string; amountMinor: bigint; accrualCount: number }>();
-    for (const accrual of accruals.filter((a) => a.settlementId === null)) { const row = payables.get(accrual.coachAssignment.coachPartyId) ?? { coachPartyId: accrual.coachAssignment.coachPartyId, coachName: accrual.coachAssignment.coachParty.displayName, amountMinor: 0n, accrualCount: 0 }; row.amountMinor += decimalToMinor(accrual.coachPayableAmount.toString()); row.accrualCount += 1; payables.set(row.coachPartyId, row); }
-    return { owner, payables: [...payables.values()].map((p) => ({ coachPartyId: p.coachPartyId, coachName: p.coachName, amount: amount(p.amountMinor), accrualCount: p.accrualCount, settleable: p.amountMinor > 0n })), accruals: accruals.map((a) => ({ id: a.id, settlementId: a.settlementId, kind: a.kind, clientName: a.client.party.displayName, coachPartyId: a.coachAssignment.coachPartyId, coachName: a.coachAssignment.coachParty.displayName, gross: a.grossAmount.toString(), commission: a.commissionAmount.toString(), net: a.coachPayableAmount.toString(), settled: a.settlementId !== null, createdAt: a.createdAt.toISOString() })), settlements: settlements.map((s) => ({ id: s.id, coachPartyId: s.coachPartyId, coachName: s.coachParty.displayName, periodStart: isoDate(s.periodStart), periodEnd: isoDate(s.periodEnd), grossRevenue: s.grossRevenue.toString(), commissionAmount: s.commissionAmount.toString(), totalAmount: s.totalAmount.toString(), status: s.status, payslipMediaAssetId: s.payslip?.documentMediaAssetId ?? null })) };
+    const payables = new Map<string, { coachPartyId: string; coachName: string; amountMinor: bigint; accrualCount: number; periodStart: Date | null; periodEnd: Date | null }>();
+    for (const accrual of accruals.filter((a) => a.settlementId === null)) {
+      const fallbackDate = accrual.payment.confirmedAt ?? accrual.createdAt;
+      const start = accrual.payment.billingPeriodStart ?? fallbackDate;
+      const end = accrual.payment.billingPeriodEnd ?? fallbackDate;
+      const row = payables.get(accrual.coachAssignment.coachPartyId) ?? { coachPartyId: accrual.coachAssignment.coachPartyId, coachName: accrual.coachAssignment.coachParty.displayName, amountMinor: 0n, accrualCount: 0, periodStart: null, periodEnd: null };
+      row.amountMinor += decimalToMinor(accrual.coachPayableAmount.toString()); row.accrualCount += 1;
+      if (!row.periodStart || start < row.periodStart) row.periodStart = start;
+      if (!row.periodEnd || end > row.periodEnd) row.periodEnd = end;
+      payables.set(row.coachPartyId, row);
+    }
+    return { owner, payables: [...payables.values()].map((p) => ({ coachPartyId: p.coachPartyId, coachName: p.coachName, amount: amount(p.amountMinor), accrualCount: p.accrualCount, periodStart: p.periodStart ? isoDate(p.periodStart) : null, periodEnd: p.periodEnd ? isoDate(p.periodEnd) : null, settleable: p.amountMinor > 0n })), accruals: accruals.map((a) => ({ id: a.id, settlementId: a.settlementId, kind: a.kind, clientName: a.client.party.displayName, coachPartyId: a.coachAssignment.coachPartyId, coachName: a.coachAssignment.coachParty.displayName, gross: a.grossAmount.toString(), commission: a.commissionAmount.toString(), net: a.coachPayableAmount.toString(), settled: a.settlementId !== null, createdAt: a.createdAt.toISOString() })), settlements: settlements.map((s) => ({ id: s.id, coachPartyId: s.coachPartyId, coachName: s.coachParty.displayName, periodStart: isoDate(s.periodStart), periodEnd: isoDate(s.periodEnd), grossRevenue: s.grossRevenue.toString(), commissionAmount: s.commissionAmount.toString(), totalAmount: s.totalAmount.toString(), status: s.status, payslipMediaAssetId: s.payslip?.documentMediaAssetId ?? null })) };
   });
 }
 

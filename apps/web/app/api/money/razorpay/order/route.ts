@@ -4,10 +4,9 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 
 const tenantId = z.string().uuid();
-const amount = z.union([z.string(), z.number()]);
 const schema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('client'), tenantId, subscriptionId: z.string().uuid(), amount }),
-  z.object({ kind: z.literal('organization'), tenantId, organizationId: z.string().uuid(), amount }),
+  z.object({ kind: z.literal('client'), tenantId, subscriptionId: z.string().uuid() }),
+  z.object({ kind: z.literal('organization'), tenantId, organizationId: z.string().uuid(), amount: z.union([z.string(), z.number()]) }),
 ]);
 
 export async function POST(request: Request) {

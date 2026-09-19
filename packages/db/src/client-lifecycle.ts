@@ -7,13 +7,13 @@ import { withTenant } from './with-tenant.js';
 import { hashPassword } from './password.js';
 
 type Tx = Prisma.TransactionClient;
-export type EnrollmentInput = { name: string; email?: string; password?: string; price: string | number; coachPartyId: string; organizationId: string | null; schedule: unknown; photoConsent: boolean; subscriptionDurationMonths: number };
+export type EnrollmentInput = { name: string; email?: string; password?: string; price: string | number; coachPartyId: string; organizationId: string | null; schedule: unknown; photoConsent: boolean; subscriptionDurationMonths: number; billingCadence?: 'upfront' | 'monthly' };
 export type ReassignCoachInput = { clientId: string; coachPartyId: string; reason?: string };
 export type BaselineInput = { clientId: string; measurements: Record<string, number>; postureNotes: string; photoAssetIds?: string[] };
 export type EvaluationInput = BaselineInput & { evaluatedAt?: string };
 export type SatisfactionInput = { clientId: string; score: number; comment?: string };
 export type NutritionInput = { clientId: string; foodName: string; mealType: 'breakfast' | 'lunch' | 'dinner' | 'snack'; inputSource?: 'text' | 'camera' | 'barcode' | 'manual'; quantityText?: string; servingGrams?: number; loggedAt?: string; notes?: string; photoAssetId?: string; nutrition?: Partial<Pick<NutritionEstimate, 'calories' | 'proteinGrams' | 'carbGrams' | 'fatGrams' | 'fiberGrams' | 'confidence'>> };
-export type ClientListEntry = { clientId: string; name: string; email: string | null; organizationId: string | null; coachPartyId: string | null; status: string; workflowState: string | null; photoConsent: boolean; };
+export type ClientListEntry = { clientId: string; name: string; email: string | null; organizationId: string | null; coachPartyId: string | null; coachName?: string | null; status: string; workflowState: string | null; photoConsent: boolean; subscription?: { billingCadence: 'upfront' | 'monthly'; totalContractValue: string; installmentAmount: string; durationMonths: number; startDate: string; endDate: string; remainingBalance: string; remainingInstallments: number } | null; };
 export type ClientPage = { clients: ClientListEntry[]; total: number; page: number; pageSize: number };
 export type NutritionEstimateSource = 'usda-fdc' | 'fitcrew-local' | 'manual';
 export type NutritionEstimate = { foodName: string; servingGrams: number; calories: number; proteinGrams: number; carbGrams: number; fatGrams: number; fiberGrams: number; confidence: number; matchedFood: string; source: NutritionEstimateSource; sourceId?: string; dataType?: string };
@@ -31,6 +31,11 @@ export async function enrollClientForUser(client: PrismaClient, tenantId: string
     const name = input.name.trim();
     if (!name || name.length > 200 || !Number.isInteger(input.subscriptionDurationMonths) || input.subscriptionDurationMonths <= 0) throw new ClientLifecycleError('Valid client details are required.');
     const price = Money.inr(input.price);
+    if (price.amountMinor <= 0n) throw new ClientLifecycleError('Subscription value must be positive.');
+    const billingCadence = input.billingCadence ?? 'monthly';
+    if (!['upfront', 'monthly'].includes(billingCadence)) throw new ClientLifecycleError('Billing cadence is invalid.');
+    const installmentMinor = billingCadence === 'monthly' ? divideRoundHalfUp(price.amountMinor, BigInt(input.subscriptionDurationMonths)) : price.amountMinor;
+    if (installmentMinor <= 0n) throw new ClientLifecycleError('Installment amount must be positive.');
     const assignments = effectiveAssignments(principal);
     const isOwner = assignments.some((assignment) => assignment.role === 'OwnerAdmin' && assignment.scopeType === 'tenant');
     const organizationAdminIds = assignments.filter((assignment) => assignment.role === 'OrgAdmin' && assignment.scopeType === 'organization').map((assignment) => assignment.scopeId).filter((scopeId): scopeId is string => scopeId !== null);
@@ -60,7 +65,7 @@ export async function enrollClientForUser(client: PrismaClient, tenantId: string
     await tx.client.updateMany({ where: { id: clientRecord.id }, data: { currentCoachAssignmentId: assignment.id } });
     if (input.photoConsent) await tx.consentRecord.create({ data: { tenantId, clientId: clientRecord.id, purpose: 'progress_photo', policyVersion: 'v1', state: 'granted', capturedByPartyId: principal.partyId, captureSource: 'enrollment', capturedAt: new Date() } });
     const endDate = addMonths(today(), input.subscriptionDurationMonths);
-    await tx.subscription.create({ data: { tenantId, clientId: clientRecord.id, price: price.toString(), startDate: today(), durationMonths: input.subscriptionDurationMonths, endDate, status: 'active' } });
+    await tx.subscription.create({ data: { tenantId, clientId: clientRecord.id, price: price.toString(), billingCadence, totalContractValue: price.toString(), installmentAmount: minorUnitsToAmount(installmentMinor), startDate: today(), durationMonths: input.subscriptionDurationMonths, endDate, status: 'active' } });
     await ensureWorkflow(tx, tenantId);
     return { clientId: clientRecord.id, partyId: party.id, assignmentId: assignment.id };
   });
@@ -70,8 +75,14 @@ export async function listClientsForUser(client: PrismaClient, tenantId: string,
   return withTenant(client as never, tenantId, async (tx: Tx) => {
     const principal = await resolvePrincipal(tx, tenantId, userId);
     if (!principal) throw new ClientLifecycleError('Forbidden.');
-    const rows = await tx.client.findMany({ where: accessGateForPrincipal(tx, principal).scopeQuery(principal, 'Client') as never, include: { party: { include: { user: { select: { email: true } } } }, currentCoachAssignment: true }, orderBy: { party: { displayName: 'asc' } } });
-    return rows.map((row) => ({ clientId: row.id, name: row.party.displayName, email: row.party.user?.email ?? null, organizationId: row.organizationId, coachPartyId: row.currentCoachAssignment?.coachPartyId ?? null, status: row.status, workflowState: row.workflowState, photoConsent: row.photoConsent }));
+    const rows = await tx.client.findMany({ where: accessGateForPrincipal(tx, principal).scopeQuery(principal, 'Client') as never, include: { party: { include: { user: { select: { email: true } } } }, currentCoachAssignment: { include: { coachParty: true } }, subscriptions: { where: { status: 'active' }, include: { payments: true }, orderBy: { endDate: 'desc' }, take: 1 } }, orderBy: { party: { displayName: 'asc' } } });
+    return rows.map((row) => {
+      const subscription = row.subscriptions[0];
+      const confirmedAmount = subscription?.payments.filter((payment) => payment.purpose === 'client_subscription' && payment.status === 'confirmed').reduce((total, payment) => total + Number(payment.amount.toString()), 0) ?? 0;
+      const confirmedInstallments = subscription ? new Set(subscription.payments.filter((payment) => payment.purpose === 'client_subscription' && payment.status === 'confirmed' && payment.installmentNumber !== null).map((payment) => payment.installmentNumber)).size : 0;
+      const installmentCount = subscription?.billingCadence === 'monthly' ? subscription.durationMonths : 1;
+      return { clientId: row.id, name: row.party.displayName, email: row.party.user?.email ?? null, organizationId: row.organizationId, coachPartyId: row.currentCoachAssignment?.coachPartyId ?? null, coachName: row.currentCoachAssignment?.coachParty.displayName ?? null, status: row.status, workflowState: row.workflowState, photoConsent: row.photoConsent, subscription: subscription ? { billingCadence: subscription.billingCadence, totalContractValue: subscription.totalContractValue.toString(), installmentAmount: subscription.installmentAmount.toString(), durationMonths: subscription.durationMonths, startDate: subscription.startDate.toISOString(), endDate: subscription.endDate.toISOString(), remainingBalance: Math.max(0, Number(subscription.totalContractValue.toString()) - confirmedAmount).toFixed(2), remainingInstallments: Math.max(0, installmentCount - confirmedInstallments) } : null };
+    });
   });
 }
 
@@ -258,6 +269,8 @@ export async function getSatisfactionMetricsForUser(client: PrismaClient, tenant
 
 function validateMeasurements(measurements: Record<string, number>) { if (!Object.keys(measurements).length || Object.values(measurements).some((value) => !Number.isFinite(value) || value < 0)) throw new ClientLifecycleError('Measurements must be non-negative numbers.'); }
 function parseDateTime(value: string) { const date = new Date(value); if (Number.isNaN(date.getTime())) throw new ClientLifecycleError('Evaluation date is invalid.'); return date; }
+function divideRoundHalfUp(numerator: bigint, denominator: bigint): bigint { return (numerator + denominator / 2n) / denominator; }
+function minorUnitsToAmount(value: bigint): string { return `${value / 100n}.${(value % 100n).toString().padStart(2, '0')}`; }
 async function requireEvaluationClient(tx: Tx, tenantId: string, userId: string, clientId: string, action: 'read' | 'update' = 'update') {
   const principal = await resolvePrincipal(tx, tenantId, userId); if (!principal) throw new ClientLifecycleError('Forbidden.');
   const clientRecord = await tx.client.findFirst({ where: { id: clientId }, include: { currentCoachAssignment: true } });

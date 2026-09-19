@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, type FormEvent } from 'react';
-import { useRouter } from 'next/navigation';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 
 type RazorpayCheckoutResponse = {
   razorpay_order_id: string;
@@ -52,12 +52,14 @@ type Accrual = {
 
 type Data = {
   ownerAccess: boolean;
+  reportingPeriod: { key: string; label: string; start: string; end: string };
   principalPartyId: string;
   ownerPartyId: string;
   refundCoachClawbackRate: string;
   handles: { id: string; partyName: string; type: string; value: string; label: string | null; isDefault: boolean }[];
   payments: {
     id: string;
+    subscriptionId: string | null;
     purpose: string;
     reversesPaymentId: string | null;
     clientName: string;
@@ -68,10 +70,15 @@ type Data = {
     utr: string | null;
     gatewayProvider: string | null;
     gatewayOrderId: string | null;
+    installmentNumber: number | null;
+    billingPeriodStart: string | null;
+    billingPeriodEnd: string | null;
     createdAt: string;
+    confirmedAt: string | null;
     accrual: Accrual | null;
   }[];
-  subscriptions: { id: string; clientName: string; coachName: string | null; price: string }[];
+  subscriptions: { id: string; clientName: string; coachName: string | null; billingCadence: 'upfront' | 'monthly'; totalContractValue: string; installmentAmount: string; durationMonths: number; confirmedInstallmentCount: number; installmentCount: number; remainingInstallmentCount: number; remainingBalance: string }[];
+  collectionsDue: { id: string; clientName: string; coachName: string | null; price: string; billingCadence: 'upfront' | 'monthly'; totalContractValue: string; installmentAmount: string; durationMonths: number; confirmedInstallmentCount: number; installmentNumber: number; installmentCount: number; remainingInstallmentCount: number; remainingBalance: string; billingPeriodStart: string; billingPeriodEnd: string; paymentStatus: 'unpaid' | 'pending' | 'confirmed'; canCollect: boolean }[];
   organizations: { id: string; name: string }[];
 };
 
@@ -84,15 +91,22 @@ const amountPattern = /^\d+(\.\d{1,2})?$/;
 
 export function MoneyWorkspace({ tenantId, initial, checkoutMode }: { tenantId: string; initial: Data; checkoutMode: 'live' | 'mock' | 'unavailable' }) {
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [error, setError] = useState('');
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [actionStates, setActionStates] = useState<Record<string, ActionState>>({});
   const [proofNames, setProofNames] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
-  const [selectedSubscriptionIdState, setSelectedSubscriptionId] = useState(initial.subscriptions[0]?.id ?? '');
+  const [selectedSubscriptionIdState, setSelectedSubscriptionId] = useState(initial.collectionsDue[0]?.id ?? '');
   const [collectedSubscriptionIds, setCollectedSubscriptionIds] = useState<Set<string>>(new Set());
-  const availableSubscriptions = initial.subscriptions.filter((subscription) => !collectedSubscriptionIds.has(subscription.id));
-  const confirmedTotal = initial.payments.filter((payment) => payment.status === 'confirmed').reduce((total, payment) => total + amountOf(payment.amount), 0);
+  const scheduledSubscriptions = initial.collectionsDue;
+  // Once a payment is created, its installment leaves this selector. The record
+  // remains visible in the monthly activity list below.
+  const availableSubscriptions = scheduledSubscriptions.filter((subscription) => subscription.paymentStatus === 'unpaid' && !collectedSubscriptionIds.has(subscription.id));
+  const collectableSubscriptions = availableSubscriptions.filter((subscription) => subscription.canCollect);
+  const isInReportingPeriod = (value: string | null) => value !== null && value >= initial.reportingPeriod.start && value < initial.reportingPeriod.end;
+  const confirmedTotal = initial.payments.filter((payment) => payment.status === 'confirmed' && isInReportingPeriod(payment.confirmedAt)).reduce((total, payment) => total + amountOf(payment.amount), 0);
   const pending = initial.payments.filter((payment) => payment.status === 'pending');
   const gatewayPending = pending.filter((payment) => payment.gatewayProvider === 'razorpay');
   const checkoutStatus = gatewayPending.length
@@ -106,9 +120,11 @@ export function MoneyWorkspace({ tenantId, initial, checkoutMode }: { tenantId: 
     ? `${gatewayPending.length} pending gateway payment${gatewayPending.length === 1 ? '' : 's'}`
     : checkoutMode === 'unavailable'
       ? 'Razorpay credentials required'
-      : initial.subscriptions.length
-        ? 'Confirming through FitCrew'
-        : 'No billable subscriptions';
+      : collectableSubscriptions.length
+        ? 'Scheduled installment ready'
+      : scheduledSubscriptions.length
+          ? 'This month is already in progress'
+          : 'No installment scheduled';
   // Refreshing after a collection removes that subscription from the picker.
   // Fall back to the next available option so the controlled select never keeps
   // a stale, invisible value.
@@ -116,16 +132,33 @@ export function MoneyWorkspace({ tenantId, initial, checkoutMode }: { tenantId: 
     ? selectedSubscriptionIdState
     : (availableSubscriptions[0]?.id ?? '');
   const selectedSubscription = availableSubscriptions.find((subscription) => subscription.id === selectedSubscriptionId);
+  const selectedCanCollect = Boolean(selectedSubscription?.canCollect && !collectedSubscriptionIds.has(selectedSubscription.id));
   const coachClientPayments = initial.payments.filter((payment) => payment.purpose === 'client_subscription');
   const awaitingVerification = coachClientPayments.filter((payment) => payment.status === 'pending');
   const verifiedPayments = coachClientPayments.filter((payment) => payment.status === 'confirmed');
   const awaitingVerificationAmount = awaitingVerification.reduce((total, payment) => total + amountOf(payment.amount), 0);
   const verifiedCoachShare = verifiedPayments.reduce((total, payment) => total + amountOf(payment.accrual?.coachPayableAmount ?? '0'), 0);
+  const plansById = new Map(initial.subscriptions.map((subscription) => [subscription.id, subscription]));
+
+  function changeMonth(offset: number) {
+    const [year, month] = initial.reportingPeriod.key.split('-').map(Number);
+    const next = new Date(Date.UTC(year!, month! - 1 + offset, 1));
+    const params = new URLSearchParams(searchParams.toString());
+    params.set('month', `${next.getUTCFullYear()}-${String(next.getUTCMonth() + 1).padStart(2, '0')}`);
+    router.push(`${pathname}?${params.toString()}`);
+  }
+
+  function goToCurrentMonth() {
+    const now = new Date();
+    const params = new URLSearchParams(searchParams.toString());
+    params.set('month', `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`);
+    router.push(`${pathname}?${params.toString()}`);
+  }
 
   // The refreshed server data is authoritative after checkout completes.
   useEffect(() => {
     setCollectedSubscriptionIds(new Set());
-  }, [initial.subscriptions]);
+  }, [initial.collectionsDue]);
 
   function clearField(name: string) {
     setFieldErrors((current) => {
@@ -236,11 +269,11 @@ export function MoneyWorkspace({ tenantId, initial, checkoutMode }: { tenantId: 
     const form = new FormData(event.currentTarget);
     const subscriptionId = valueOf(form, 'subscriptionId');
     const subscription = availableSubscriptions.find((row) => row.id === subscriptionId);
-    if (!subscription) {
+    if (!subscription || !subscription.canCollect || collectedSubscriptionIds.has(subscription.id)) {
       showErrors({ subscriptionId: 'Pick client.' });
       return;
     }
-    if (await openRazorpay({ kind: 'client', tenantId, subscriptionId, amount: subscription.price }, 'client-payment')) {
+    if (await openRazorpay({ kind: 'client', tenantId, subscriptionId }, 'client-payment')) {
       setCollectedSubscriptionIds((current) => new Set(current).add(subscriptionId));
       event.currentTarget.reset();
     }
@@ -256,7 +289,6 @@ export function MoneyWorkspace({ tenantId, initial, checkoutMode }: { tenantId: 
       if (!response.ok || !('orderId' in order)) throw new Error('error' in order ? order.error : 'Razorpay order failed.');
       let checkoutResponse: RazorpayCheckoutResponse;
       if (order.checkoutMode === 'mock') {
-        if (!window.confirm(`Mock payment: confirm ${inr.format(order.amountMinor / 100)}?`)) throw new Error('Payment was cancelled.');
         if (!order.mockConfirmation) throw new Error('Mock checkout confirmation is unavailable.');
         checkoutResponse = {
           razorpay_order_id: order.orderId,
@@ -357,38 +389,49 @@ export function MoneyWorkspace({ tenantId, initial, checkoutMode }: { tenantId: 
 
   return (
     <div className="finance-workspace">
+      <section className="money-period-bar" aria-label="Monthly reporting period">
+        <div>
+          <p className="eyebrow">Monthly overview</p>
+          <h2>{initial.reportingPeriod.label}</h2>
+          <p>Collections confirmed or payment records created in this calendar month.</p>
+        </div>
+        <div className="month-switcher" role="group" aria-label="Change reporting month">
+          <button type="button" className="month-switcher-button" onClick={() => changeMonth(-1)} aria-label="Previous month">‹</button>
+          <span>{initial.reportingPeriod.label}</span>
+          <button type="button" className="month-switcher-button" onClick={() => changeMonth(1)} aria-label="Next month">›</button>
+          <button type="button" className="month-current-button" onClick={goToCurrentMonth}>Current month</button>
+        </div>
+      </section>
       <section className="finance-summary" aria-label="Collections overview">
-        <FinanceMetric label="Confirmed" value={inr.format(confirmedTotal)} detail="Cleared inflow" tone="blue" />
-        <FinanceMetric label="Pending" value={String(pending.length)} detail="Awaiting admin verification" tone="orange" />
-        <FinanceMetric label="Checkout" value={checkoutStatus} detail={checkoutDetail} tone={gatewayPending.length ? 'orange' : 'green'} />
-        <FinanceMetric label="Subscriptions" value={String(availableSubscriptions.length)} detail="Ready to bill" tone="purple" />
+        <FinanceMetric label="Collected this month" value={inr.format(confirmedTotal)} detail="Confirmed inflow" tone="blue" />
+        <FinanceMetric label="To verify this month" value={inr.format(pending.reduce((total, payment) => total + amountOf(payment.amount), 0))} detail={`${pending.length} payment${pending.length === 1 ? '' : 's'} awaiting review`} tone="orange" />
+        <FinanceMetric label="Monthly payment activity" value={String(initial.payments.length)} detail={initial.payments.length ? 'Created or confirmed in this period' : 'No activity yet'} tone="purple" />
+        <FinanceMetric label="Ready to collect now" value={String(collectableSubscriptions.length)} detail={checkoutDetail} tone={gatewayPending.length ? 'orange' : 'green'} />
       </section>
 
       <div className="finance-command-grid">
         <section className="finance-command">
           <div>
-            <p className="eyebrow">Primary action</p>
-            <h2>Payment collection.</h2>
-            <p>Checkout opens through Razorpay and is marked paid only after FitCrew verifies the gateway signature and posts the ledger entry.</p>
+            <p className="eyebrow">Subscription schedule</p>
+            <h2>Review this month’s installment.</h2>
+            <p>The client and installment below always match the month you are viewing. Confirmed collections flow into coach earnings automatically.</p>
           </div>
           <form className="finance-form" onSubmit={acceptClientPayment} noValidate>
             <label className="finance-subscription-field">
-              <span>Client subscription</span>
-              <select name="subscriptionId" aria-label="Client subscription" value={selectedSubscriptionId} {...invalidProps('subscriptionId')} onChange={(event) => {
+              {availableSubscriptions.length ? <><span>Client subscription</span><select name="subscriptionId" aria-label="Client subscription" value={selectedSubscriptionId} {...invalidProps('subscriptionId')} onChange={(event) => {
                 setSelectedSubscriptionId(event.currentTarget.value);
                 clearField('subscriptionId');
               }}>
-                {availableSubscriptions.length ? availableSubscriptions.map((subscription) => (
+                {availableSubscriptions.map((subscription) => (
                   <option key={subscription.id} value={subscription.id}>
-                    {subscription.clientName} · {subscription.coachName ? `Coach: ${subscription.coachName} · ` : ''}{inr.format(amountOf(subscription.price))}
+                    {subscription.clientName} · {subscription.coachName ? `Coach: ${subscription.coachName} · ` : ''}{subscription.billingCadence === 'monthly' ? `Month ${subscription.installmentNumber}/${subscription.installmentCount} · ` : ''}{inr.format(amountOf(subscription.price))}
                   </option>
-                )) : <option value="">No subscriptions available</option>}
-              </select>
-              <FieldError id="subscriptionId-error" message={fieldErrors.subscriptionId} />
-              <small className="muted">{selectedSubscription?.coachName ? `Assigned coach: ${selectedSubscription.coachName} · ` : ''}Fixed amount: {selectedSubscription ? inr.format(amountOf(selectedSubscription.price)) : '—'}</small>
+                ))}
+              </select><FieldError id="subscriptionId-error" message={fieldErrors.subscriptionId} /></> : null}
+              {selectedSubscription ? <div className="collection-plan" aria-label="Selected payment plan"><div className="collection-plan-title"><strong>{selectedSubscription.billingCadence === 'monthly' ? `Installment ${selectedSubscription.installmentNumber} of ${selectedSubscription.installmentCount}` : 'Full package'}</strong><b>{inr.format(amountOf(selectedSubscription.price))}</b></div><dl><div><dt>Coach</dt><dd>{selectedSubscription.coachName ?? 'Not assigned'}</dd></div><div><dt>Scheduled for</dt><dd>{new Date(selectedSubscription.billingPeriodStart).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} – {new Date(selectedSubscription.billingPeriodEnd).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</dd></div><div><dt>Payment status</dt><dd className={`collection-status ${selectedSubscription.paymentStatus}`}>{selectedSubscription.paymentStatus}</dd></div><div><dt>Balance after this</dt><dd>{inr.format(Math.max(0, amountOf(selectedSubscription.remainingBalance) - amountOf(selectedSubscription.price)))}</dd></div></dl></div> : <div className="collection-empty"><strong>{scheduledSubscriptions.length ? 'All installments are already recorded.' : 'No installment is scheduled for this month.'}</strong><span>{scheduledSubscriptions.length ? 'Paid and pending installments appear in the payment activity below.' : 'Choose another month to review its subscription schedule.'}</span></div>}
             </label>
-            <button className="primary-button" disabled={busy || !availableSubscriptions.length || checkoutMode === 'unavailable'} data-state={stateOf('client-payment')} aria-busy={stateOf('client-payment') === 'submitting'}>
-              {stateOf('client-payment') === 'submitting' ? 'Starting checkout' : checkoutMode === 'unavailable' ? 'Checkout unavailable' : 'Continue to checkout'}
+            <button className="primary-button checkout-button" disabled={busy || !selectedCanCollect || checkoutMode === 'unavailable'} data-state={stateOf('client-payment')} aria-busy={stateOf('client-payment') === 'submitting'}>
+              {stateOf('client-payment') === 'submitting' ? 'Recording test payment…' : checkoutMode === 'mock' && selectedCanCollect ? `Record ${inr.format(amountOf(selectedSubscription?.price ?? '0'))} test payment →` : checkoutMode === 'unavailable' ? 'Checkout needs setup' : !selectedSubscription ? 'No payment to collect' : selectedCanCollect ? 'Continue to checkout →' : 'Not available to collect'}
             </button>
           </form>
         </section>
@@ -401,18 +444,21 @@ export function MoneyWorkspace({ tenantId, initial, checkoutMode }: { tenantId: 
           <div>
             <p className="eyebrow">Verification queue</p>
             <h2>Payment records</h2>
-            <p className="muted">Confirmations create the ledger event and commission snapshot.</p>
+            <p className="muted">Payment activity in {initial.reportingPeriod.label}. Confirmations create the ledger event and commission snapshot.</p>
           </div>
           <span className="count-label">{initial.payments.length}</span>
         </div>
         <div className="finance-record-list">
-          {initial.payments.length ? initial.payments.map((payment) => (
-            <article className="finance-record" key={payment.id}>
+          {initial.payments.length ? initial.payments.map((payment) => {
+            const plan = payment.subscriptionId ? plansById.get(payment.subscriptionId) : undefined;
+            return <article className="finance-record" key={payment.id}>
               <div className="finance-record-main">
                 <span className={`finance-status ${payment.status}`}>{payment.status}</span>
                 <div>
                   <h3>{payment.clientName}</h3>
                   <p>{payment.purpose.replaceAll('_', ' ')} · {payment.gatewayProvider ? 'ONLINE PAYMENT' : payment.method.toUpperCase()} · {new Date(payment.createdAt).toLocaleString('en-IN')}</p>
+                  {payment.installmentNumber ? <small>Installment {payment.installmentNumber} of {plan?.installmentCount ?? '—'}{payment.billingPeriodStart && payment.billingPeriodEnd ? ` · ${new Date(payment.billingPeriodStart).toLocaleDateString('en-IN')} to ${new Date(payment.billingPeriodEnd).toLocaleDateString('en-IN')}` : ''}</small> : null}
+                  {plan ? <small>Plan balance remaining: {inr.format(amountOf(plan.remainingBalance))} · {plan.remainingInstallmentCount} installment{plan.remainingInstallmentCount === 1 ? '' : 's'} remaining</small> : null}
                   {payment.coachName ? <small>Assigned coach: {payment.coachName}</small> : null}
                   {payment.accrual ? (
                     <small>
@@ -466,8 +512,8 @@ export function MoneyWorkspace({ tenantId, initial, checkoutMode }: { tenantId: 
                   </form>
                 </details>
               ) : null}
-            </article>
-          )) : <p className="muted">No payment records yet. Record a client payment to begin the audit trail.</p>}
+            </article>;
+          }) : <p className="muted">No payment records yet. Record a client payment to begin the audit trail.</p>}
         </div>
       </section> : <section className="surface finance-records coach-payment-status">
         <div className="section-heading">
