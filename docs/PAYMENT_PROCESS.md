@@ -18,14 +18,14 @@ FitCrew intentionally does not treat a client payment as a payment directly to a
 3. FitCrew creates a **pending client-subscription payment**. Its parties are:
    - **Payer:** the client
    - **Payee:** the owner/business
-4. The client completes checkout. The record remains pending until it is confirmed by an owner.
+4. The client completes checkout. FitCrew confirms the record only after either the verified Checkout callback (including a server-side captured-payment fetch) or a signed `payment.captured` webhook. An owner cannot substitute a UTR or screenshot to confirm a Razorpay record.
 
 The coach may initiate the collection, but the money is collected for the owner/business account. A coach cannot confirm their own client-payment record.
 
 ## 2. Owner verifies and confirms the client payment
 
-1. The owner reviews the pending payment in **Money**.
-2. For Razorpay payments, FitCrew verifies the order, payment ID, and signature before confirming it. For manual payments, the owner must provide a valid UTR/reference or screenshot proof.
+1. The owner reviews payment status in **Money**.
+2. For Razorpay payments, FitCrew verifies the order, payment ID, signature, and captured status before confirmation. For the exceptional legacy manual mode, an owner must provide a valid UTR/reference or screenshot proof.
 3. FitCrew changes the record to **confirmed**, records who confirmed it and when, and writes an audit-log event.
 4. A balanced ledger entry records that cash has been received by the owner/business.
 

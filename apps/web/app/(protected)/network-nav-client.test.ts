@@ -3,7 +3,7 @@ import { getVisibleNavLinks } from './network-nav-client';
 
 describe('role navigation', () => {
   it('limits organization admins to organization features', () => {
-    expect(getVisibleNavLinks(['OrgAdmin']).map((link) => link.label)).toEqual(['Organizations', 'Clients', 'Training', 'Account']);
+    expect(getVisibleNavLinks(['OrgAdmin']).map((link) => link.label)).toEqual(['Organizations', 'Clients', 'Nutrition', 'Training', 'Account']);
   });
   it('shows Overview only to owner admins', () => {
     expect(getVisibleNavLinks(['OwnerAdmin']).map((link) => link.label)).toContain('Overview');

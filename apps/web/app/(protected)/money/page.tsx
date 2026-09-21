@@ -7,10 +7,10 @@ import { AccessFallback } from '../access-fallback';
 
 const inr = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 });
 const amountOf = (value: string) => Number(value) || 0;
-const checkoutMode = process.env.NODE_ENV === 'development'
+const checkoutMode = process.env.PAYMENT_GATEWAY_MODE === 'mock'
   ? 'mock'
   : process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET
-    ? 'live'
+    ? process.env.RAZORPAY_KEY_ID.startsWith('rzp_test_') ? 'test' : 'live'
     : 'unavailable';
 
 export default async function MoneyPage({ searchParams }: { searchParams: { tenantId?: string; month?: string } }) {

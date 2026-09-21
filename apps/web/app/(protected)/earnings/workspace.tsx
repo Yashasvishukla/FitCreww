@@ -1,12 +1,12 @@
 'use client';
 
 import { useState, type FormEvent } from 'react';
-import { useRouter } from 'next/navigation';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 
 type Payable = { coachPartyId: string; coachName: string; amount: string; accrualCount: number; periodStart: string | null; periodEnd: string | null; settleable: boolean };
 type Accrual = { id: string; settlementId: string | null; kind: 'earning' | 'correction'; clientName: string; coachName: string; gross: string; commission: string; net: string; settled: boolean; createdAt: string };
 type Settlement = { id: string; coachName: string; periodStart: string; periodEnd: string; grossRevenue: string; commissionAmount: string; totalAmount: string; status: string; payslipMediaAssetId: string | null };
-type Data = { owner: boolean; payables: Payable[]; accruals: Accrual[]; settlements: Settlement[] };
+type Data = { owner: boolean; reportingPeriod: { key: string; label: string; start: string; end: string }; payables: Payable[]; accruals: Accrual[]; settlements: Settlement[] };
 type ActionState = 'idle' | 'submitting' | 'complete' | 'failed';
 
 const inr = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 });
@@ -16,6 +16,8 @@ const periodFor = (payable: Payable | undefined) => ({ periodStart: payable?.per
 
 export function EarningsWorkspace({ tenantId, initial }: { tenantId: string; initial: Data }) {
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [error, setError] = useState('');
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [actionStates, setActionStates] = useState<Record<string, ActionState>>({});
@@ -36,6 +38,26 @@ export function EarningsWorkspace({ tenantId, initial }: { tenantId: string; ini
   const coachNetEarnings = initial.accruals.reduce((sum, accrual) => sum + amountOf(accrual.net), 0);
   const coachPaidOut = issued.reduce((sum, settlement) => sum + amountOf(settlement.totalAmount), 0);
   const coachAwaitingPayout = openAccruals.reduce((sum, accrual) => sum + amountOf(accrual.net), 0) + draftSettlements.reduce((sum, settlement) => sum + amountOf(settlement.totalAmount), 0);
+  const today = new Date();
+  const currentMonthKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+  const isCurrentMonth = initial.reportingPeriod.key === currentMonthKey;
+  const periodStart = new Date(`${initial.reportingPeriod.key}-01T00:00:00`);
+  const periodEnd = new Date(periodStart.getFullYear(), periodStart.getMonth() + 1, 0);
+  const periodRange = `${periodStart.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} – ${periodEnd.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}`;
+
+  function changeMonth(offset: number) {
+    const [year, month] = initial.reportingPeriod.key.split('-').map(Number);
+    const next = new Date(Date.UTC(year!, month! - 1 + offset, 1));
+    const params = new URLSearchParams(searchParams.toString());
+    params.set('month', `${next.getUTCFullYear()}-${String(next.getUTCMonth() + 1).padStart(2, '0')}`);
+    router.push(`${pathname}?${params.toString()}`);
+  }
+
+  function goToCurrentMonth() {
+    const params = new URLSearchParams(searchParams.toString());
+    params.set('month', currentMonthKey);
+    router.push(`${pathname}?${params.toString()}`);
+  }
 
   function showSettlementTrace(settlementId: string) {
     setSelectedSettlementId(settlementId);
@@ -100,9 +122,28 @@ export function EarningsWorkspace({ tenantId, initial }: { tenantId: string; ini
   }
 
   return <div className="finance-workspace earnings-workspace">
+    <section className="money-period-bar" aria-label="Monthly earnings reporting period">
+      <div className="money-period-copy">
+        <div className="money-period-kicker">
+          <span className="money-period-icon" aria-hidden="true">▦</span>
+          <p className="eyebrow">Monthly earnings</p>
+          {isCurrentMonth ? <span className="money-period-live">Current month</span> : <span className="money-period-archive">Past month</span>}
+        </div>
+        <h2>Viewing {initial.reportingPeriod.label}</h2>
+        <p>{periodRange} · Earnings are grouped by the month each client payment was confirmed.</p>
+      </div>
+      <div className="money-period-controls" role="group" aria-label="Change reporting month">
+        <div className="month-switcher">
+          <button type="button" className="month-switcher-button" onClick={() => changeMonth(-1)} aria-label="View previous month"><span aria-hidden="true">‹</span></button>
+          <span className="month-switcher-label" aria-live="polite">{initial.reportingPeriod.label}</span>
+          <button type="button" className="month-switcher-button" onClick={() => changeMonth(1)} aria-label="View next month"><span aria-hidden="true">›</span></button>
+        </div>
+        {!isCurrentMonth ? <button type="button" className="month-current-button" onClick={goToCurrentMonth} aria-label="View current month">Today</button> : null}
+      </div>
+    </section>
     {initial.owner ? <>
       <section className="owner-payout-summary" aria-label="Coach payout overview">
-        <div><p className="eyebrow">Confirmed earnings to pay</p><strong>{inr.format(totalPayable)}</strong><span>{readyPayables.length === 1 ? '1 coach is ready for payout' : `${readyPayables.length} coaches are ready for payout`}</span></div>
+        <div><p className="eyebrow">Confirmed earnings in {initial.reportingPeriod.label}</p><strong>{inr.format(totalPayable)}</strong><span>{readyPayables.length === 1 ? '1 coach is ready for payout' : `${readyPayables.length} coaches are ready for payout`}</span></div>
         <dl><div><dt>Awaiting transfer</dt><dd>{draftSettlements.length}</dd></div><div><dt>Payslips issued</dt><dd>{issued.length}</dd></div><div><dt>Open earnings</dt><dd>{openAccruals.length}</dd></div></dl>
       </section>
 
@@ -124,15 +165,15 @@ export function EarningsWorkspace({ tenantId, initial }: { tenantId: string; ini
         </aside>
       </div>
     </> : <><section className="finance-summary coach-earnings-summary" aria-label="Your earnings overview">
-      <FinanceMetric label="Total net earnings" value={inr.format(coachNetEarnings)} detail="After owner commission" tone="green" />
-      <FinanceMetric label="Paid to you" value={inr.format(coachPaidOut)} detail={`${issued.length} confirmed payout${issued.length === 1 ? '' : 's'}`} tone="blue" />
-      <FinanceMetric label="Awaiting payout" value={inr.format(coachAwaitingPayout)} detail={draftSettlements.length ? 'Transfer is being confirmed' : 'Ready for the next settlement'} tone="orange" />
-      <FinanceMetric label="Owner commission" value={inr.format(coachCommission)} detail={`From ${inr.format(coachGrossEarnings)} client payments`} tone="purple" />
-    </section><section className="finance-command finance-single-command coach-earnings-card"><div><p className="eyebrow">Your earnings breakdown</p><h2>{inr.format(coachNetEarnings)} earned in total</h2><p>Each confirmed client payment is split using your agreed commission rate. Refunds and corrections are included automatically.</p></div><dl className="coach-earnings-breakdown"><div><dt>Client payments</dt><dd>{inr.format(coachGrossEarnings)}</dd></div><div><dt>Owner commission</dt><dd>−{inr.format(coachCommission)}</dd></div><div><dt>Net earnings</dt><dd>{inr.format(coachNetEarnings)}</dd></div></dl></section></>}
+      <FinanceMetric label={`Net earnings in ${initial.reportingPeriod.label}`} value={inr.format(coachNetEarnings)} detail="After owner commission" tone="green" />
+      <FinanceMetric label={`Payouts covering ${initial.reportingPeriod.label}`} value={inr.format(coachPaidOut)} detail={`${issued.length} confirmed payout${issued.length === 1 ? '' : 's'}`} tone="blue" />
+      <FinanceMetric label={`Awaiting payout in ${initial.reportingPeriod.label}`} value={inr.format(coachAwaitingPayout)} detail={draftSettlements.length ? 'Transfer is being confirmed' : 'Ready for the next settlement'} tone="orange" />
+      <FinanceMetric label={`Commission in ${initial.reportingPeriod.label}`} value={inr.format(coachCommission)} detail={`From ${inr.format(coachGrossEarnings)} client payments`} tone="purple" />
+    </section><section className="finance-command finance-single-command coach-earnings-card"><div><p className="eyebrow">Your {initial.reportingPeriod.label} breakdown</p><h2>{inr.format(coachNetEarnings)} earned this month</h2><p>Each confirmed client payment is split using your agreed commission rate. Refunds and corrections are included automatically.</p></div><dl className="coach-earnings-breakdown"><div><dt>Client payments</dt><dd>{inr.format(coachGrossEarnings)}</dd></div><div><dt>Owner commission</dt><dd>−{inr.format(coachCommission)}</dd></div><div><dt>Net earnings</dt><dd>{inr.format(coachNetEarnings)}</dd></div></dl></section></>}
 
     {error ? <p className="form-error finance-error" role="alert">{error}</p> : null}
 
-    <section className="surface finance-records"><div className="section-heading"><div><p className="eyebrow">Payout history</p><h2>Settlements and payslips</h2><p className="muted">Select a payout to view the client-payment accruals included in it.</p></div><span className="count-label">{initial.settlements.length}</span></div><div className="finance-record-list">{initial.settlements.length ? initial.settlements.map((row) => { const accrualCount = initial.accruals.filter((accrual) => accrual.settlementId === row.id).length; return <article className="finance-record" key={row.id} data-selected={selectedSettlementId === row.id || undefined}><div className="finance-record-main"><span className={`finance-status ${row.status}`}>{row.status}</span><div><h3>{row.coachName}</h3><p>{row.periodStart} to {row.periodEnd} · Gross {inr.format(amountOf(row.grossRevenue))} · Commission {inr.format(amountOf(row.commissionAmount))}</p></div></div><strong className="finance-amount">{inr.format(amountOf(row.totalAmount))}</strong><div className="earnings-settlement-actions"><button className="secondary-button" type="button" onClick={() => showSettlementTrace(row.id)}>View {accrualCount} accrual{accrualCount === 1 ? '' : 's'}</button>{row.status === 'draft' && initial.owner ? <span className="finance-proof">Confirm this payout above</span> : row.payslipMediaAssetId ? <a className="secondary-button" href={`/api/payslips/${row.payslipMediaAssetId}?tenantId=${tenantId}`} target="_blank">Open payslip</a> : <span className="finance-proof">Payout pending</span>}</div></article>; }) : <p className="muted">No settlement batches have been created yet.</p>}</div></section>
+    <section className="surface finance-records"><div className="section-heading"><div><p className="eyebrow">Payout history</p><h2>Settlements and payslips</h2><p className="muted">Payout periods overlapping {initial.reportingPeriod.label}. Select a payout to view its included client-payment accruals.</p></div><span className="count-label">{initial.settlements.length}</span></div><div className="finance-record-list">{initial.settlements.length ? initial.settlements.map((row) => { const accrualCount = initial.accruals.filter((accrual) => accrual.settlementId === row.id).length; return <article className="finance-record" key={row.id} data-selected={selectedSettlementId === row.id || undefined}><div className="finance-record-main"><span className={`finance-status ${row.status}`}>{row.status}</span><div><h3>{row.coachName}</h3><p>{row.periodStart} to {row.periodEnd} · Gross {inr.format(amountOf(row.grossRevenue))} · Commission {inr.format(amountOf(row.commissionAmount))}</p></div></div><strong className="finance-amount">{inr.format(amountOf(row.totalAmount))}</strong><div className="earnings-settlement-actions"><button className="secondary-button" type="button" onClick={() => showSettlementTrace(row.id)}>View {accrualCount} accrual{accrualCount === 1 ? '' : 's'}</button>{row.status === 'draft' && initial.owner ? <span className="finance-proof">Confirm this payout above</span> : row.payslipMediaAssetId ? <a className="secondary-button" href={`/api/payslips/${row.payslipMediaAssetId}?tenantId=${tenantId}`} target="_blank">Open payslip</a> : <span className="finance-proof">Payout pending</span>}</div></article>; }) : <p className="muted">No settlement batches overlap this month.</p>}</div></section>
 
     <section className="surface finance-records" id="accrual-traceability"><div className="section-heading"><div><p className="eyebrow">Traceability</p><h2>Accrual detail</h2><p className="muted">{selectedSettlement ? `Showing the ${traceableAccruals.length} accruals included in ${selectedSettlement.coachName}'s payout.` : 'Every number can be traced back to a confirmed client payment.'}</p>{selectedSettlement ? <button className="secondary-button" type="button" onClick={() => setSelectedSettlementId(null)}>Show all accruals</button> : null}</div><span className="count-label">{traceableAccruals.length}</span></div><div className="finance-record-list">{traceableAccruals.length ? traceableAccruals.map((row) => <article className="finance-record finance-accrual" key={row.id}><div className="finance-record-main"><span className={`finance-status ${row.settled ? 'confirmed' : 'pending'}`}>{row.settled ? 'settled' : 'payable'}</span><div><h3>{row.clientName}</h3><p>{row.coachName} · {row.kind === 'correction' ? 'Correction' : 'Earning'} · {new Date(row.createdAt).toLocaleDateString('en-IN')}</p></div></div><div className="finance-breakdown"><span>Gross <strong>{inr.format(amountOf(row.gross))}</strong></span><span>Commission <strong>{inr.format(amountOf(row.commission))}</strong></span><span>Net <strong>{inr.format(amountOf(row.net))}</strong></span></div></article>) : <p className="muted">No accruals are linked to this payout.</p>}</div></section>
   </div>;

@@ -3,7 +3,7 @@ import { Money } from '@fitcrew/domain';
 import { Prisma, type PrismaClient } from '@prisma/client';
 import Razorpay from 'razorpay';
 import { validatePaymentVerification, validateWebhookSignature } from 'razorpay/dist/utils/razorpay-utils';
-import { createHmac, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { accessGateForPrincipal, resolvePrincipal } from './access-gate.js';
 import { PrismaLedgerRepository } from './ledger.js';
 import { withTenant } from './with-tenant.js';
@@ -16,7 +16,7 @@ export type RecordClientPaymentInput = { subscriptionId: string; amount?: string
 export type RecordOrganizationPaymentInput = { organizationId: string; amount: string | number; method: PaymentMethodInput };
 export type ConfirmPaymentInput = { paymentId: string; utr?: string; proofMediaAssetId?: string };
 export type ConfirmRazorpayPaymentInput = { paymentId: string; razorpayOrderId: string; razorpayPaymentId: string; razorpaySignature: string };
-export type ConfirmRazorpayWebhookInput = { rawBody: string; signature: string };
+export type ConfirmRazorpayWebhookInput = { rawBody: string; signature: string; eventId: string };
 export type CreateRazorpayOrderInput = { kind: 'client'; subscriptionId: string } | { kind: 'organization'; organizationId: string; amount: string | number };
 type RazorpayOrderResult = {
   keyId: string;
@@ -26,7 +26,7 @@ type RazorpayOrderResult = {
   currency: 'INR';
   name: string;
   description: string;
-  checkoutMode: 'live' | 'mock';
+  checkoutMode: 'test' | 'live' | 'mock';
   mockConfirmation?: {
     razorpayPaymentId: string;
     razorpaySignature: string;
@@ -73,6 +73,7 @@ export async function updatePayoutHandleForUser(client: PrismaClient, tenantId: 
 }
 
 export async function recordClientPaymentForUser(client: PrismaClient, tenantId: string, userId: string, input: RecordClientPaymentInput) {
+  assertPermittedClientCollectionMethod(input.method);
   return withTenant(client as never, tenantId, async (tx: Tx) => {
     const principal = await requirePrincipal(tx, tenantId, userId);
     const subscription = await tx.subscription.findFirst({ where: { id: input.subscriptionId }, include: { payments: true, client: { include: { currentCoachAssignment: true } } } });
@@ -82,6 +83,11 @@ export async function recordClientPaymentForUser(client: PrismaClient, tenantId:
       ? await tx.party.findFirst({ where: { id: principal.partyId, status: 'active' } })
       : (await tx.engagement.findFirst({ where: { downstreamPartyId: assignment.coachPartyId, validTo: null }, include: { upstreamParty: true }, orderBy: { validFrom: 'desc' } }))?.upstreamParty;
     if (!owner) throw new PaymentRecordingError('Tenant owner was not found.');
+    // A gateway timeout happens after this local record is created. Keep the
+    // same financial identity on retry instead of advancing the installment or
+    // creating a second pending receivable.
+    const existingPending = subscription.payments.find((payment) => payment.purpose === 'client_subscription' && payment.status === 'pending');
+    if (existingPending) return { id: existingPending.id, status: existingPending.status, amount: existingPending.amount.toString(), installmentNumber: existingPending.installmentNumber!, billingPeriodStart: isoDate(existingPending.billingPeriodStart!), billingPeriodEnd: isoDate(existingPending.billingPeriodEnd!) };
     const due = nextSubscriptionInstallment(subscription);
     const payment = await tx.paymentRecord.create({ data: { tenantId, payerPartyId: subscription.client.partyId, payeePartyId: owner.id, subscriptionId: subscription.id, purpose: 'client_subscription', amount: due.amount, method: input.method, status: 'pending', installmentNumber: due.installmentNumber, billingPeriodStart: due.periodStart, billingPeriodEnd: due.periodEnd } });
     await audit(tx, tenantId, principal.partyId, 'create', 'payment', payment.id, { status: 'pending', amount: payment.amount.toString(), subscriptionId: subscription.id, installmentNumber: due.installmentNumber, billingPeriodStart: isoDate(due.periodStart), billingPeriodEnd: isoDate(due.periodEnd), billingCadence: subscription.billingCadence });
@@ -98,6 +104,9 @@ export async function recordOrganizationPaymentForUser(client: PrismaClient, ten
     const owner = await tx.party.findFirst({ where: { id: principal.partyId, status: 'active' } });
     if (!owner) throw new PaymentRecordingError('Tenant owner was not found.');
     const amount = Money.inr(input.amount); if (amount.amountMinor <= 0n) throw new PaymentRecordingError('Payment amount must be positive.');
+    const existing = await tx.paymentRecord.findFirst({ where: { organizationId: organization.id, purpose: 'org_agreement' } });
+    if (existing?.status === 'pending') return { id: existing.id, status: existing.status, amount: existing.amount.toString() };
+    if (existing) throw new PaymentRecordingError('This organization already has an agreement payment record.');
     try {
       const payment = await tx.paymentRecord.create({ data: { tenantId, payerPartyId: organization.partyId, payeePartyId: owner.id, organizationId: organization.id, purpose: 'org_agreement', amount: amount.toString(), method: input.method, status: 'pending' } });
       await audit(tx, tenantId, principal.partyId, 'create', 'payment', payment.id, { status: 'pending', purpose: 'org_agreement', amount: amount.toString(), organizationId: organization.id });
@@ -113,6 +122,13 @@ export async function createRazorpayOrderForUser(client: PrismaClient, tenantId:
   const pending = input.kind === 'client'
     ? await recordClientPaymentForUser(client, tenantId, userId, { subscriptionId: input.subscriptionId, method: 'razorpay' })
     : await recordOrganizationPaymentForUser(client, tenantId, userId, { organizationId: input.organizationId, amount: input.amount, method: 'razorpay' });
+  const existing = await withTenant(client as never, tenantId, (tx: Tx) => tx.paymentRecord.findFirst({ where: { id: pending.id } }));
+  if (!existing || existing.status !== 'pending') throw new PaymentRecordingError('Payment is unavailable for Razorpay checkout.');
+  if (existing.gatewayProvider === 'razorpay' && existing.gatewayOrderId) return razorpayOrderResult({
+    paymentId: existing.id, orderId: existing.gatewayOrderId, amountMinor: decimalToMinor(existing.amount.toString()), kind: input.kind,
+  });
+  if (existing.gatewayOrderId || existing.method !== 'razorpay') throw new PaymentRecordingError('Payment is already awaiting another collection method.');
+
   const order = await createRazorpayOrder({ paymentId: pending.id, amountMinor: decimalToMinor(pending.amount), tenantId });
   await withTenant(client as never, tenantId, async (tx: Tx) => {
     const updated = await tx.paymentRecord.updateMany({
@@ -121,17 +137,21 @@ export async function createRazorpayOrderForUser(client: PrismaClient, tenantId:
     });
     if (updated.count !== 1) throw new PaymentRecordingError('Payment order was already initialized.');
   });
-  const mockPaymentId = order.mock ? `pay_mock_${randomUUID().replaceAll('-', '')}` : null;
+  return razorpayOrderResult({ paymentId: pending.id, orderId: order.id, amountMinor: BigInt(order.amount), kind: input.kind, mock: order.mock });
+}
+
+function razorpayOrderResult(input: { paymentId: string; orderId: string; amountMinor: bigint; kind: CreateRazorpayOrderInput['kind']; mock?: boolean }): RazorpayOrderResult {
+  const mockPaymentId = input.mock ? `pay_mock_${randomUUID().replaceAll('-', '')}` : null;
   return {
     keyId: razorpayConfig().keyId,
-    paymentId: pending.id,
-    orderId: order.id,
-    amountMinor: order.amount,
-    currency: order.currency,
+    paymentId: input.paymentId,
+    orderId: input.orderId,
+    amountMinor: Number(input.amountMinor),
+    currency: 'INR',
     name: 'FitCrew',
     description: input.kind === 'client' ? 'Client subscription payment' : 'Organization agreement payment',
-    checkoutMode: order.mock ? 'mock' as const : 'live' as const,
-    ...(mockPaymentId ? { mockConfirmation: { razorpayPaymentId: mockPaymentId, razorpaySignature: paymentSignature(order.id, mockPaymentId) } } : {}),
+    checkoutMode: input.mock ? 'mock' as const : razorpayConfig().keyId.startsWith('rzp_test_') ? 'test' as const : 'live' as const,
+    ...(mockPaymentId ? { mockConfirmation: { razorpayPaymentId: mockPaymentId, razorpaySignature: paymentSignature(input.orderId, mockPaymentId) } } : {}),
   };
 }
 
@@ -167,10 +187,20 @@ export async function confirmRazorpayPaymentForUser(client: PrismaClient, tenant
 
 export async function confirmRazorpayWebhookPayment(client: PrismaClient, input: ConfirmRazorpayWebhookInput) {
   verifyRazorpayWebhookSignature(input.rawBody, input.signature);
+  if (!/^[A-Za-z0-9_:-]{1,255}$/.test(input.eventId)) throw new PaymentRecordingError('Razorpay webhook event id is invalid.');
   const event = parseRazorpayWebhook(input.rawBody);
   if (!event) return { ignored: true as const };
 
   return withTenant(client as never, event.tenantId, async (tx: Tx) => {
+    // Create before financial work. The unique event id gives us exactly-once
+    // handling even when Razorpay retries a successfully delivered webhook.
+    const existingEvent = await tx.paymentGatewayEvent.findFirst({ where: { provider: 'razorpay', eventId: input.eventId } });
+    if (existingEvent) return { ignored: true as const, duplicate: true as const };
+    const gatewayEvent = await tx.paymentGatewayEvent.create({ data: {
+      tenantId: event.tenantId,
+      provider: 'razorpay', eventId: input.eventId, eventType: 'payment.captured',
+      payloadSha256: createHash('sha256').update(input.rawBody).digest('hex'), outcome: 'received',
+    } });
     const payment = await tx.paymentRecord.findFirst({
       where: {
         id: event.paymentId,
@@ -180,12 +210,15 @@ export async function confirmRazorpayWebhookPayment(client: PrismaClient, input:
       include: { subscription: { include: { client: { include: { currentCoachAssignment: true } } } } },
     });
     if (!payment) throw new PaymentRecordingError('Razorpay payment is unavailable for webhook confirmation.');
-    if (payment.status === 'confirmed') return { id: payment.id, status: 'confirmed' as const, duplicate: true as const };
+    if (payment.status === 'confirmed') {
+      await tx.paymentGatewayEvent.updateMany({ where: { id: gatewayEvent.id }, data: { paymentRecordId: payment.id, outcome: 'duplicate', processedAt: new Date() } });
+      return { id: payment.id, status: 'confirmed' as const, duplicate: true as const };
+    }
     if (payment.status !== 'pending') throw new PaymentRecordingError('Razorpay payment is not pending.');
     if (decimalToMinor(payment.amount.toString()) !== BigInt(event.amountMinor)) throw new PaymentRecordingError('Razorpay payment amount does not match FitCrew.');
 
     const principal = await gatewayOwnerPrincipal(tx, event.tenantId, payment.payeePartyId);
-    return confirmPaymentTx(tx, event.tenantId, principal, payment, {
+    const confirmed = await confirmPaymentTx(tx, event.tenantId, principal, payment, {
       source: 'gateway',
       confirmedAt: event.capturedAt,
       utr: event.razorpayPaymentId,
@@ -196,6 +229,8 @@ export async function confirmRazorpayWebhookPayment(client: PrismaClient, input:
       gatewayPaymentId: event.razorpayPaymentId,
       gatewaySignature: null,
     });
+    await tx.paymentGatewayEvent.updateMany({ where: { id: gatewayEvent.id }, data: { paymentRecordId: payment.id, outcome: 'confirmed', processedAt: new Date() } });
+    return confirmed;
   });
 }
 
@@ -204,6 +239,12 @@ export async function confirmPaymentForUser(client: PrismaClient, tenantId: stri
     const principal = await requireOwner(tx, tenantId, userId);
     const payment = await tx.paymentRecord.findFirst({ where: { id: input.paymentId }, include: { subscription: { include: { client: { include: { currentCoachAssignment: true } } } } } });
     if (!payment) throw new PaymentRecordingError('Payment is unavailable for manual confirmation.');
+    // Browser-submitted UTRs or screenshots must never be used to confirm a
+    // Razorpay collection. Razorpay records are confirmed only by the verified
+    // Checkout callback or signed gateway webhook.
+    if (payment.method === 'razorpay' || payment.gatewayProvider === 'razorpay') {
+      throw new PaymentRecordingError('Razorpay payments must be confirmed by verified gateway evidence.');
+    }
     const confirmation = await new ManualConfirmationSource(input).awaitConfirmation(payment.id);
     if (confirmation.proofMediaAssetId) {
       const proof = await tx.mediaAsset.findFirst({ where: { id: confirmation.proofMediaAssetId, status: 'active' } });
@@ -342,11 +383,29 @@ function minorUnitsToAmount(value: bigint): string { return `${value / 100n}.${(
 function amountSigned(value: bigint): string { const sign = value < 0n ? '-' : ''; const absolute = value < 0n ? -value : value; return `${sign}${absolute / 100n}.${(absolute % 100n).toString().padStart(2, '0')}`; }
 function divideRoundHalfUp(numerator: bigint, denominator: bigint): bigint { return (numerator + denominator / 2n) / denominator; }
 const LOCAL_MOCK_RAZORPAY_SECRET = 'fitcrew-local-mock-checkout-only';
-function localMockCheckoutEnabled() { return process.env.NODE_ENV === 'development'; }
+/**
+ * Mock checkout is intentionally opt-in. Staging must be able to run with
+ * rzp_test_* keys while NODE_ENV remains production-like.
+ */
+function localMockCheckoutEnabled() { return process.env.PAYMENT_GATEWAY_MODE === 'mock'; }
+/**
+ * Manual client collection is an explicit, non-production migration escape
+ * hatch. It is deliberately off by default so a new coach collection cannot
+ * silently bypass Razorpay in Test, Staging, or Live environments.
+ */
+function manualClientCollectionsEnabled() {
+  return process.env.NODE_ENV !== 'production' && process.env.PAYMENT_COLLECTION_MODE === 'manual';
+}
+function assertPermittedClientCollectionMethod(method: PaymentMethodInput) {
+  if (method === 'razorpay') return;
+  if (manualClientCollectionsEnabled()) return;
+  throw new PaymentRecordingError('New client collections must use Razorpay Checkout.');
+}
 function razorpayConfig() {
   if (localMockCheckoutEnabled()) return { keyId: 'rzp_test_fitcrew_local_mock', keySecret: LOCAL_MOCK_RAZORPAY_SECRET };
   const keyId = process.env.RAZORPAY_KEY_ID?.trim(); const keySecret = process.env.RAZORPAY_KEY_SECRET?.trim();
   if (!keyId || !keySecret) throw new PaymentRecordingError('Razorpay credentials are not configured.');
+  if (!/^rzp_(test|live)_[A-Za-z0-9]+$/.test(keyId)) throw new PaymentRecordingError('Razorpay key id is invalid.');
   return { keyId, keySecret };
 }
 function razorpayClient() {
@@ -385,7 +444,13 @@ async function verifyCapturedRazorpayPayment(razorpayPaymentId: string, expected
 function verifyRazorpayWebhookSignature(rawBody: string, signature: string) {
   const secret = process.env.RAZORPAY_WEBHOOK_SECRET?.trim();
   if (!secret) throw new PaymentRecordingError('Razorpay webhook secret is not configured.');
-  if (!validateWebhookSignature(rawBody, signature, secret)) throw new PaymentRecordingError('Razorpay webhook signature is invalid.');
+  // During a deliberate secret rotation Razorpay may retry an older delivery
+  // signed with the previous secret. Keep this value only for that bounded
+  // overlap, then remove it once the retry window has elapsed.
+  const previousSecret = process.env.RAZORPAY_WEBHOOK_PREVIOUS_SECRET?.trim();
+  const valid = validateWebhookSignature(rawBody, signature, secret)
+    || Boolean(previousSecret && validateWebhookSignature(rawBody, signature, previousSecret));
+  if (!valid) throw new PaymentRecordingError('Razorpay webhook signature is invalid.');
 }
 type ParsedRazorpayWebhook = {
   tenantId: string;

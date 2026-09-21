@@ -9,6 +9,7 @@ import {
   hashPassword,
   InviteError,
   normalizeEmail,
+  recordClientPaymentForUser,
   verifyPassword,
   withTenant,
   estimateFoodNutritionFromBestSource,
@@ -40,7 +41,7 @@ describe('credential primitives', () => {
 
 describe('tenant-scoping query rewrite', () => {
   it('documents the current tenant-scoped Prisma models', () => {
-    expect(TENANT_SCOPED_MODELS).toEqual(['TenantConfig', 'Party', 'RoleAssignment', 'Engagement', 'Organization', 'Client', 'ClientCoachAssignment', 'ConsentRecord', 'MediaAsset', 'WorkflowDefinition', 'WorkflowStage', 'Evaluation', 'EvaluationPhoto', 'SatisfactionRecord', 'NutritionLog', 'Subscription', 'ExerciseCatalog', 'WorkoutPlan', 'PlanDay', 'TrainingSession', 'WorkoutDraft', 'EvaluationSchedule', 'EvaluationDueEvent', 'AuditLog', 'Invite', 'LedgerAccount', 'LedgerEntry', 'LedgerLine', 'PayoutHandle', 'PaymentRecord', 'ClientEngagementClock', 'CommissionAccrual', 'Settlement', 'Payslip']);
+    expect(TENANT_SCOPED_MODELS).toEqual(['TenantConfig', 'Party', 'RoleAssignment', 'Engagement', 'Organization', 'Client', 'ClientCoachAssignment', 'ConsentRecord', 'MediaAsset', 'WorkflowDefinition', 'WorkflowStage', 'Evaluation', 'EvaluationPhoto', 'SatisfactionRecord', 'NutritionLog', 'Subscription', 'ExerciseCatalog', 'WorkoutPlan', 'PlanDay', 'TrainingSession', 'WorkoutDraft', 'EvaluationSchedule', 'EvaluationDueEvent', 'AuditLog', 'Invite', 'LedgerAccount', 'LedgerEntry', 'LedgerLine', 'PayoutHandle', 'PaymentRecord', 'PaymentGatewayEvent', 'ClientEngagementClock', 'CommissionAccrual', 'Settlement', 'Payslip']);
   });
 
   it('adds tenantId to read filters', () => {
@@ -312,6 +313,7 @@ describe('Razorpay webhook verification', () => {
     await expect(confirmRazorpayWebhookPayment({} as never, {
       rawBody,
       signature: 'bad-signature',
+      eventId: 'evt_invalid_signature',
     })).rejects.toThrow('Razorpay webhook signature is invalid.');
   });
 
@@ -327,6 +329,23 @@ describe('Razorpay webhook verification', () => {
     await expect(confirmRazorpayWebhookPayment(client as never, {
       rawBody,
       signature: sign(rawBody),
+      eventId: 'evt_ignored_event',
     })).resolves.toEqual({ ignored: true });
+  });
+
+  it('rejects new manual client collections unless the explicit local legacy mode is enabled', async () => {
+    const priorMode = process.env.PAYMENT_COLLECTION_MODE;
+    const priorNodeEnv = process.env.NODE_ENV;
+    delete process.env.PAYMENT_COLLECTION_MODE;
+    process.env.NODE_ENV = 'test';
+    const client = { $extends() { throw new Error('manual collection must fail before a database transaction opens'); } };
+
+    await expect(recordClientPaymentForUser(client as never, tenantId, 'user-id', {
+      subscriptionId: '33333333-3333-4333-8333-333333333333', method: 'upi',
+    })).rejects.toThrow('New client collections must use Razorpay Checkout.');
+
+    if (priorMode === undefined) delete process.env.PAYMENT_COLLECTION_MODE;
+    else process.env.PAYMENT_COLLECTION_MODE = priorMode;
+    process.env.NODE_ENV = priorNodeEnv;
   });
 });

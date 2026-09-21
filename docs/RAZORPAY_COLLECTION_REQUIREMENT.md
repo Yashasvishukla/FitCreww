@@ -14,6 +14,6 @@ Each payment flow must preserve:
 - replay safety: duplicate callbacks or webhooks cannot create a second confirmed payment or ledger entry;
 - secret safety: Razorpay API and webhook secrets remain server-only.
 
-Manual UPI/QR/phone payment recording is legacy/manual mode. It must not become the collection path for new coach-initiated client payments where Razorpay is enabled.
+Manual UPI/QR/phone payment recording is legacy/manual mode. It must not become the collection path for new coach-initiated client payments. FitCrew rejects it by default in every environment; it can be enabled only for a non-production migration using the explicit `PAYMENT_COLLECTION_MODE=manual` setting. Razorpay payment records can never be manually confirmed with a UTR or proof upload.
 
 Production readiness requires real Razorpay credentials, a configured webhook secret and endpoint, webhook delivery/retry monitoring, and automated security/isolation coverage.
