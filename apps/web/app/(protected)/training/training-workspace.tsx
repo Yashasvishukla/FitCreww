@@ -337,6 +337,19 @@ function EditableTrainingWorkspace({ tenantId, dashboard, showWorkoutHistory }: 
         },
         ...current,
       ]);
+      const loggedReps = workout.flatMap((exercise) => exercise.sets).reduce((sum, set) => sum + Number(set.reps), 0);
+      setWorkspace((current) => current.monthlyProgress ? {
+        ...current,
+        monthlyProgress: {
+          ...current.monthlyProgress,
+          current: {
+            ...current.monthlyProgress.current,
+            sessions: current.monthlyProgress.current.sessions + 1,
+            sets: current.monthlyProgress.current.sets + totalSets,
+            reps: current.monthlyProgress.current.reps + loggedReps,
+          },
+        },
+      } : current);
       setStatus("Workout saved to client history.");
       setWorkout([]);
       setActiveId("");
@@ -376,25 +389,6 @@ function EditableTrainingWorkspace({ tenantId, dashboard, showWorkoutHistory }: 
   }
   return (
     <div className="fitnotes-workspace">
-      <section className="history-launch">
-        <div>
-          <span>REVIEW TRAINING</span>
-          <p>Browse completed workouts by day and client.</p>
-        </div>
-        <button
-          className={`global-history-toggle ${globalHistoryOpen ? "open" : ""}`}
-          onClick={() => setGlobalHistoryOpen((open) => !open)}
-          aria-expanded={globalHistoryOpen}
-          aria-controls="global-workout-history"
-        >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M7 2v3M17 2v3M3.5 9h17M5.5 4.5h13A1.5 1.5 0 0 1 20 6v12.5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 18.5V6a1.5 1.5 0 0 1 1.5-1.5ZM8 13h3m2 0h3M8 16.5h3" />
-          </svg>
-          <span>{globalHistoryOpen ? "Close history" : "Workout history"}</span>
-          <b aria-hidden="true">{globalHistoryOpen ? "×" : "›"}</b>
-        </button>
-      </section>
-      {globalHistoryOpen && <GlobalWorkoutHistory sessions={sessions} />}
       <section className="fitnotes-topbar">
         <div className="fitnotes-client">
           <span>CLIENT</span>
@@ -591,8 +585,39 @@ function EditableTrainingWorkspace({ tenantId, dashboard, showWorkoutHistory }: 
           close={() => setPickerOpen(false)}
         />
       )}
+      <section className="history-launch">
+        <div>
+          <span>REVIEW TRAINING</span>
+          <p>Browse completed workouts by day and client.</p>
+        </div>
+        <button className={`global-history-toggle ${globalHistoryOpen ? "open" : ""}`} onClick={() => setGlobalHistoryOpen((open) => !open)} aria-expanded={globalHistoryOpen} aria-controls="global-workout-history">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 2v3M17 2v3M3.5 9h17M5.5 4.5h13A1.5 1.5 0 0 1 20 6v12.5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 18.5V6a1.5 1.5 0 0 1 1.5-1.5ZM8 13h3m2 0h3M8 16.5h3" /></svg>
+          <span>{globalHistoryOpen ? "Close history" : "Workout history"}</span><b aria-hidden="true">{globalHistoryOpen ? "×" : "›"}</b>
+        </button>
+      </section>
+      {globalHistoryOpen && <GlobalWorkoutHistory sessions={sessions} />}
+      {workspace.monthlyProgress && <ExerciseProgress progress={workspace.monthlyProgress} />}
+      {workspace.monthlyProgress && <TrainingVolumeHistory progress={workspace.monthlyProgress} />}
     </div>
   );
+}
+
+function ExerciseProgress({ progress }: { progress: NonNullable<TrainingDashboard['monthlyProgress']> }) {
+  const displayed = progress.exercises.slice(0, 6);
+  return <section className="exercise-monthly-progress" aria-label="Exercise-by-exercise monthly progress">
+    <header><div><p>EXERCISE PROGRESS</p><h2>Where the work is growing</h2><span>Four months of completed sets and reps for every movement.</span></div></header>
+    {displayed.length ? <div className="exercise-progress-list"><div className="exercise-progress-columns" aria-hidden="true"><span>Exercise</span>{progress.months.map((month) => <span key={month.key}>{month.label}</span>)}</div>{displayed.map((exercise) => {
+      const repDelta = exercise.current.reps - exercise.previous.reps;
+      return <article key={exercise.name}><div className="exercise-progress-name"><strong>{exercise.name}</strong><small>{repDelta > 0 ? `+${repDelta} reps vs ${progress.previous.label}` : repDelta < 0 ? `${repDelta} reps vs ${progress.previous.label}` : 'No change vs last month'}</small></div>{exercise.months.map((month, index) => <div className="exercise-progress-value" key={progress.months[index]!.key}><strong>{month.reps}</strong><small>reps · {month.sets} sets</small></div>)}</article>;
+    })}</div> : <p className="exercise-progress-empty">Complete a workout to begin an exercise-by-exercise comparison.</p>}
+  </section>;
+}
+
+function TrainingVolumeHistory({ progress }: { progress: NonNullable<TrainingDashboard['monthlyProgress']> }) {
+  return <section className="training-volume-history" aria-label="Four-month training volume history">
+    <header><div><p>VOLUME HISTORY</p><h2>Last four months</h2><span>An exact record of completed training volume.</span></div></header>
+    <div className="training-history-table"><div className="training-history-row training-history-head" aria-hidden="true"><span>Month</span><span>Sets</span><span>Reps</span><span>Sessions</span></div>{progress.months.map((month) => <div className="training-history-row" key={month.key}><strong>{month.label}</strong><span>{month.sets}</span><span>{month.reps}</span><span>{month.sessions}</span></div>)}</div>
+  </section>;
 }
 function EmptyBoard({ open }: { open: () => void }) {
   return (

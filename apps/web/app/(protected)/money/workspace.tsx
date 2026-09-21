@@ -17,7 +17,7 @@ type RazorpayOrder = {
   currency: 'INR';
   name: string;
   description: string;
-  checkoutMode: 'live' | 'mock';
+  checkoutMode: 'test' | 'live' | 'mock';
   mockConfirmation?: {
     razorpayPaymentId: string;
     razorpaySignature: string;
@@ -89,7 +89,7 @@ const amountOf = (value: string) => Number(value) || 0;
 const valueOf = (form: FormData, name: string) => String(form.get(name) ?? '').trim();
 const amountPattern = /^\d+(\.\d{1,2})?$/;
 
-export function MoneyWorkspace({ tenantId, initial, checkoutMode }: { tenantId: string; initial: Data; checkoutMode: 'live' | 'mock' | 'unavailable' }) {
+export function MoneyWorkspace({ tenantId, initial, checkoutMode }: { tenantId: string; initial: Data; checkoutMode: 'test' | 'live' | 'mock' | 'unavailable' }) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -109,13 +109,6 @@ export function MoneyWorkspace({ tenantId, initial, checkoutMode }: { tenantId: 
   const confirmedTotal = initial.payments.filter((payment) => payment.status === 'confirmed' && isInReportingPeriod(payment.confirmedAt)).reduce((total, payment) => total + amountOf(payment.amount), 0);
   const pending = initial.payments.filter((payment) => payment.status === 'pending');
   const gatewayPending = pending.filter((payment) => payment.gatewayProvider === 'razorpay');
-  const checkoutStatus = gatewayPending.length
-    ? 'Gateway reconciliation required'
-    : checkoutMode === 'mock'
-      ? 'Mock checkout enabled'
-      : checkoutMode === 'live'
-        ? 'Live checkout enabled'
-        : 'Online checkout unavailable';
   const checkoutDetail = gatewayPending.length
     ? `${gatewayPending.length} pending gateway payment${gatewayPending.length === 1 ? '' : 's'}`
     : checkoutMode === 'unavailable'
@@ -133,6 +126,12 @@ export function MoneyWorkspace({ tenantId, initial, checkoutMode }: { tenantId: 
     : (availableSubscriptions[0]?.id ?? '');
   const selectedSubscription = availableSubscriptions.find((subscription) => subscription.id === selectedSubscriptionId);
   const selectedCanCollect = Boolean(selectedSubscription?.canCollect && !collectedSubscriptionIds.has(selectedSubscription.id));
+  const today = new Date();
+  const currentMonthKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+  const isCurrentMonth = initial.reportingPeriod.key === currentMonthKey;
+  const periodStart = new Date(`${initial.reportingPeriod.key}-01T00:00:00`);
+  const periodEnd = new Date(periodStart.getFullYear(), periodStart.getMonth() + 1, 0);
+  const periodRange = `${periodStart.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} – ${periodEnd.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}`;
   const coachClientPayments = initial.payments.filter((payment) => payment.purpose === 'client_subscription');
   const awaitingVerification = coachClientPayments.filter((payment) => payment.status === 'pending');
   const verifiedPayments = coachClientPayments.filter((payment) => payment.status === 'confirmed');
@@ -390,22 +389,32 @@ export function MoneyWorkspace({ tenantId, initial, checkoutMode }: { tenantId: 
   return (
     <div className="finance-workspace">
       <section className="money-period-bar" aria-label="Monthly reporting period">
-        <div>
-          <p className="eyebrow">Monthly overview</p>
-          <h2>{initial.reportingPeriod.label}</h2>
-          <p>Collections confirmed or payment records created in this calendar month.</p>
+        <div className="money-period-copy">
+          <div className="money-period-kicker">
+            <span className="money-period-icon" aria-hidden="true">▦</span>
+            <p className="eyebrow">Monthly report</p>
+            {isCurrentMonth ? <span className="money-period-live">Current month</span> : <span className="money-period-archive">Past month</span>}
+          </div>
+          <h2>Viewing {initial.reportingPeriod.label}</h2>
+          <p>{periodRange} · All collections and activity are grouped by calendar month.</p>
         </div>
-        <div className="month-switcher" role="group" aria-label="Change reporting month">
-          <button type="button" className="month-switcher-button" onClick={() => changeMonth(-1)} aria-label="Previous month">‹</button>
-          <span>{initial.reportingPeriod.label}</span>
-          <button type="button" className="month-switcher-button" onClick={() => changeMonth(1)} aria-label="Next month">›</button>
-          <button type="button" className="month-current-button" onClick={goToCurrentMonth}>Current month</button>
+        <div className="money-period-controls" role="group" aria-label="Change reporting month">
+          <div className="month-switcher">
+            <button type="button" className="month-switcher-button" onClick={() => changeMonth(-1)} aria-label="View previous month">
+              <span aria-hidden="true">‹</span>
+            </button>
+            <span className="month-switcher-label" aria-live="polite">{initial.reportingPeriod.label}</span>
+            <button type="button" className="month-switcher-button" onClick={() => changeMonth(1)} aria-label="View next month">
+              <span aria-hidden="true">›</span>
+            </button>
+          </div>
+          {!isCurrentMonth ? <button type="button" className="month-current-button" onClick={goToCurrentMonth} aria-label="View current month">Today</button> : null}
         </div>
       </section>
       <section className="finance-summary" aria-label="Collections overview">
-        <FinanceMetric label="Collected this month" value={inr.format(confirmedTotal)} detail="Confirmed inflow" tone="blue" />
-        <FinanceMetric label="To verify this month" value={inr.format(pending.reduce((total, payment) => total + amountOf(payment.amount), 0))} detail={`${pending.length} payment${pending.length === 1 ? '' : 's'} awaiting review`} tone="orange" />
-        <FinanceMetric label="Monthly payment activity" value={String(initial.payments.length)} detail={initial.payments.length ? 'Created or confirmed in this period' : 'No activity yet'} tone="purple" />
+        <FinanceMetric label={`Collected in ${initial.reportingPeriod.label}`} value={inr.format(confirmedTotal)} detail="Confirmed inflow" tone="blue" />
+        <FinanceMetric label={`To verify in ${initial.reportingPeriod.label}`} value={inr.format(pending.reduce((total, payment) => total + amountOf(payment.amount), 0))} detail={`${pending.length} payment${pending.length === 1 ? '' : 's'} awaiting review`} tone="orange" />
+        <FinanceMetric label={`${initial.reportingPeriod.label} activity`} value={String(initial.payments.length)} detail={initial.payments.length ? 'Created or confirmed in this period' : 'No activity yet'} tone="purple" />
         <FinanceMetric label="Ready to collect now" value={String(collectableSubscriptions.length)} detail={checkoutDetail} tone={gatewayPending.length ? 'orange' : 'green'} />
       </section>
 
@@ -471,7 +480,7 @@ export function MoneyWorkspace({ tenantId, initial, checkoutMode }: { tenantId: 
                 </div>
               </div>
               <strong className="finance-amount">{inr.format(amountOf(payment.amount))}</strong>
-              {payment.status === 'pending' ? (
+              {payment.status === 'pending' && payment.method !== 'razorpay' && payment.gatewayProvider !== 'razorpay' ? (
                 <form className="finance-inline-form" onSubmit={(event) => confirm(event, payment.id)} noValidate>
                   <label className="finance-compact-field">
                     <span className="sr-only">UTR</span>
@@ -495,7 +504,7 @@ export function MoneyWorkspace({ tenantId, initial, checkoutMode }: { tenantId: 
                     {stateOf(`confirm-${payment.id}`) === 'submitting' ? 'Confirming' : 'Confirm'}
                   </button>
                 </form>
-              ) : payment.status === 'pending' ? <span className="finance-proof">Online payment pending</span> : <span className="finance-proof">{payment.gatewayProvider ? 'Online payment' : 'UTR'} {payment.utr ?? 'Proof attached'}</span>}
+              ) : payment.status === 'pending' ? <span className="finance-proof">Online payment pending verification</span> : <span className="finance-proof">{payment.gatewayProvider ? 'Online payment' : 'UTR'} {payment.utr ?? 'Proof attached'}</span>}
               {initial.ownerAccess && payment.purpose === 'client_subscription' && payment.status === 'confirmed' ? (
                 <details className="finance-disclosure finance-refund">
                   <summary>Post a refund</summary>

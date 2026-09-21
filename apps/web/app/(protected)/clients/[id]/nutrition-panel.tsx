@@ -40,6 +40,22 @@ export function NutritionPanel({ tenantId, clientId, initial, loadError = false 
     setPending(false);
   }
 
+  function syncDayAcrossHistory(next: NutritionDaySummary) {
+    const day = { date: next.date, calories: next.totals.calories, count: next.entries.length };
+    if (dates.includes(next.date)) {
+      setHistory((current) => {
+        const withoutDay = current.filter((item) => item.date !== day.date);
+        return [...withoutDay, day].sort((a, b) => a.date.localeCompare(b.date));
+      });
+    }
+    if (calendarMonth === next.date.slice(0, 7)) {
+      setCalendarDays((current) => {
+        const withoutDay = current.filter((item) => item.date !== day.date);
+        return [...withoutDay, day].sort((a, b) => a.date.localeCompare(b.date));
+      });
+    }
+  }
+
   useEffect(() => {
     let active = true;
     setHistoryPending(true);
@@ -89,6 +105,10 @@ export function NutritionPanel({ tenantId, clientId, initial, loadError = false 
         inputSource: nutrition ? 'manual' : 'text',
         quantityText: data.get('quantityText'),
         servingGrams: optionalNumber(data.get('servingGrams')),
+        // Keep the write target in lockstep with the day the journal is showing.
+        // Noon UTC is deliberate: the nutrition journal is day-based, and it
+        // avoids a timezone boundary moving a selected calendar day.
+        loggedAt: `${summary.date}T12:00:00.000Z`,
         nutrition,
         notes: data.get('notes'),
       }),
@@ -101,10 +121,13 @@ export function NutritionPanel({ tenantId, clientId, initial, loadError = false 
     }
     const refresh = await fetch(`/api/clients/nutrition?tenantId=${tenantId}&clientId=${clientId}&date=${summary.date}`);
     const next = await refresh.json() as NutritionDaySummary | { error?: string };
-    if (refresh.ok && 'entries' in next) setSummary(next);
+    if (refresh.ok && 'entries' in next) {
+      setSummary(next);
+      syncDayAcrossHistory(next);
+    }
     form.reset();
     setPending(false);
-    setMessage({ text: 'Food logged.', kind: 'success' });
+    setMessage({ text: `Food logged for ${formatDate(summary.date)}.`, kind: 'success' });
   }
 
   const isToday = summary.date === todayString();
@@ -114,8 +137,8 @@ export function NutritionPanel({ tenantId, clientId, initial, loadError = false 
       <div className="nutrition-day-toolbar"><button className="date-step" type="button" aria-label="Previous day" onClick={() => loadDay(shiftDate(summary.date, -1))}>‹</button><div><p className="eyebrow">{isToday ? 'Today’s intake' : 'Daily intake'}</p><h3>{formatDate(summary.date)}</h3></div>{!isToday ? <button className="nutrition-today-button" type="button" onClick={() => loadDay(todayString())}>Today</button> : null}<label className="nutrition-date-picker"><span className="sr-only">Choose date</span><input aria-label="Choose date" type="date" value={summary.date} max={todayString()} onChange={(event) => loadDay(event.target.value)} /></label><button className="date-step" type="button" aria-label="Next day" disabled={isToday || pending} onClick={() => loadDay(shiftDate(summary.date, 1))}>›</button></div>
       <div className="nutrition-summary"><div className="nutrition-calorie-total"><span>Total calories</span><strong>{summary.totals.calories}</strong><small>kcal logged</small></div><div><span>Protein</span><strong>{summary.totals.proteinGrams}g</strong><small>daily total</small></div><div><span>Carbs</span><strong>{summary.totals.carbGrams}g</strong><small>daily total</small></div><div><span>Fat</span><strong>{summary.totals.fatGrams}g</strong><small>daily total</small></div></div>
     </section>
-    <section className="nutrition-section"><div className="nutrition-section-heading"><div><p className="eyebrow">Quick add</p><h3>Log a meal</h3></div><span className="nutrition-item-count">{summary.entries.length} {summary.entries.length === 1 ? 'item' : 'items'} today</span></div><form className="auth-form nutrition-form" onSubmit={submit}><div className="form-grid"><label><span>Food item</span><input name="foodName" placeholder="e.g. 2 eggs and toast" maxLength={200} required /></label><label><span>Meal</span><select name="mealType" defaultValue="lunch"><option value="breakfast">Breakfast</option><option value="lunch">Lunch</option><option value="dinner">Dinner</option><option value="snack">Snack</option></select></label><label><span>Portion</span><input name="quantityText" placeholder="1 bowl, 150g, 2 pieces" maxLength={120} /></label><label><span>Weight (g)</span><input name="servingGrams" type="number" min="1" max="10000" step="1" /></label></div><details><summary>Add exact macros</summary><div className="form-grid"><label><span>Calories</span><input name="calories" type="number" min="0" max="20000" step="1" /></label><label><span>Protein (g)</span><input name="proteinGrams" type="number" min="0" step="0.1" /></label><label><span>Carbs (g)</span><input name="carbGrams" type="number" min="0" step="0.1" /></label><label><span>Fat (g)</span><input name="fatGrams" type="number" min="0" step="0.1" /></label></div></details><label><span>Note <em>optional</em></span><input name="notes" maxLength={1000} placeholder="Home cooked, restaurant, label checked" /></label><div className="nutrition-form-action"><button className="primary-button" type="submit" disabled={pending}>{pending ? 'Logging...' : 'Add to log'}</button>{message ? <p role="status" className={message.kind === 'success' ? 'success-message' : 'form-error'}>{message.text}</p> : null}</div></form></section>
-    <section className="nutrition-section"><div className="nutrition-section-heading"><div><p className="eyebrow">Meal breakdown</p><h3>Today’s log</h3></div></div><div className="nutrition-meals">{meals.map((meal) => <div key={meal}><span>{meal}</span><strong>{summary.byMeal[meal]?.calories ?? 0}</strong><small>{summary.byMeal[meal]?.count ?? 0} {summary.byMeal[meal]?.count === 1 ? 'item' : 'items'}</small></div>)}</div><div className="data-list nutrition-log">{summary.entries.length ? summary.entries.map((entry) => <article className="data-row nutrition-entry" key={entry.id}><div><h3>{entry.foodName}</h3><p className="muted">{entry.mealType} · {entry.servingGrams}g · P {entry.proteinGrams}g / C {entry.carbGrams}g / F {entry.fatGrams}g</p></div><strong>{entry.calories}<small> kcal</small></strong></article>) : <p className="nutrition-empty">Nothing logged yet. Add the first meal above.</p>}</div></section>
+    <section className="nutrition-section"><div className="nutrition-section-heading"><div><p className="eyebrow">Quick add</p><h3>Log a meal for {isToday ? 'today' : formatDate(summary.date)}</h3></div><span className="nutrition-item-count">{summary.entries.length} {summary.entries.length === 1 ? 'item' : 'items'} logged</span></div><form className="auth-form nutrition-form" onSubmit={submit}><div className="form-grid"><label><span>Food item</span><input name="foodName" placeholder="e.g. 2 eggs and toast" maxLength={200} required /></label><label><span>Meal</span><select name="mealType" defaultValue="lunch"><option value="breakfast">Breakfast</option><option value="lunch">Lunch</option><option value="dinner">Dinner</option><option value="snack">Snack</option></select></label><label><span>Portion</span><input name="quantityText" placeholder="1 bowl, 150g, 2 pieces" maxLength={120} /></label><label><span>Weight (g)</span><input name="servingGrams" type="number" min="1" max="10000" step="1" /></label></div><details><summary>Add exact macros</summary><div className="form-grid"><label><span>Calories</span><input name="calories" type="number" min="0" max="20000" step="1" /></label><label><span>Protein (g)</span><input name="proteinGrams" type="number" min="0" step="0.1" /></label><label><span>Carbs (g)</span><input name="carbGrams" type="number" min="0" step="0.1" /></label><label><span>Fat (g)</span><input name="fatGrams" type="number" min="0" step="0.1" /></label></div></details><label><span>Note <em>optional</em></span><input name="notes" maxLength={1000} placeholder="Home cooked, restaurant, label checked" /></label><div className="nutrition-form-action"><button className="primary-button" type="submit" disabled={pending}>{pending ? 'Logging...' : `Add to ${isToday ? 'today' : 'this day'}’s log`}</button>{message ? <p role="status" className={message.kind === 'success' ? 'success-message' : 'form-error'}>{message.text}</p> : null}</div></form></section>
+    <section className="nutrition-section"><div className="nutrition-section-heading"><div><p className="eyebrow">Meal breakdown</p><h3>{isToday ? 'Today’s log' : `${formatDate(summary.date)} log`}</h3></div></div><div className="nutrition-meals">{meals.map((meal) => <div key={meal}><span>{meal}</span><strong>{summary.byMeal[meal]?.calories ?? 0}</strong><small>{summary.byMeal[meal]?.count ?? 0} {summary.byMeal[meal]?.count === 1 ? 'item' : 'items'}</small></div>)}</div><div className="data-list nutrition-log">{summary.entries.length ? summary.entries.map((entry) => <article className="data-row nutrition-entry" key={entry.id}><div><h3>{entry.foodName}</h3><p className="muted">{entry.mealType} · {entry.servingGrams}g · P {entry.proteinGrams}g / C {entry.carbGrams}g / F {entry.fatGrams}g</p></div><strong>{entry.calories}<small> kcal</small></strong></article>) : <p className="nutrition-empty">Nothing logged for this day yet. Add the first meal above.</p>}</div></section>
     <section className="nutrition-section nutrition-history"><div className="nutrition-section-heading"><div><p className="eyebrow">History</p><h3>Calorie history</h3></div><div className="nutrition-history-actions">{!isToday ? <button className="nutrition-today-button" type="button" onClick={() => loadDay(todayString())}>Today</button> : null}<div className="nutrition-view-toggle" role="group" aria-label="History view"><button className={historyView === 'week' ? 'is-active' : ''} type="button" onClick={() => setHistoryView('week')}>7 days</button><button className={historyView === 'calendar' ? 'is-active' : ''} type="button" onClick={() => setHistoryView('calendar')}>Calendar</button></div></div></div>{historyView === 'week' ? <><p className="nutrition-history-hint">{historyPending ? 'Updating…' : 'Tap a day to review'}</p><div className="nutrition-history-list">{dates.map((date) => { const day = history.find((item) => item.date === date) ?? { date, calories: 0, count: 0 }; return <button className={`nutrition-history-day${day.date === summary.date ? ' is-selected' : ''}`} key={day.date} type="button" onClick={() => loadDay(day.date)}><span>{day.date === todayString() ? 'Today' : shortDate(day.date)}</span><strong>{day.calories}</strong><small>kcal · {day.count} {day.count === 1 ? 'item' : 'items'}</small></button>; })}</div></> : <NutritionCalendar month={calendarMonth} days={calendarDays} selectedDate={summary.date} pending={calendarPending} onMonthChange={setCalendarMonth} onSelect={loadDay} />}</section>
   </div>;
 }

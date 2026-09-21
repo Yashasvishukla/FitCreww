@@ -50,6 +50,7 @@ model Tenant {
   ledgerLines           LedgerLine[]
   payoutHandles         PayoutHandle[]
   payments              PaymentRecord[]
+  paymentGatewayEvents  PaymentGatewayEvent[]
   engagementClocks      ClientEngagementClock[]
   commissionAccruals    CommissionAccrual[]
   settlements           Settlement[]
@@ -856,6 +857,7 @@ model PaymentRecord {
   confirmedBy         Party?              @relation("PaymentConfirmedBy", fields: [confirmedByPartyId], references: [id])
   commissionAccruals  CommissionAccrual[]
   payoutForSettlement Settlement?         @relation("SettlementPayout")
+  gatewayEvents       PaymentGatewayEvent[]
 
   @@unique([id, tenantId])
   @@unique([tenantId, gatewayOrderId])
@@ -864,6 +866,31 @@ model PaymentRecord {
   @@index([tenantId, status, createdAt])
   @@index([tenantId, payerPartyId, createdAt])
   @@map("payment_record")
+  @@schema("public")
+}
+
+// Delivery evidence is kept separately from the financial record.  Razorpay
+// can retry and reorder webhooks, so its event id—not a payment status
+// transition—is the idempotency boundary.
+model PaymentGatewayEvent {
+  id              String         @id @default(uuid()) @db.Uuid
+  tenantId        String         @map("tenant_id") @db.Uuid
+  provider        String
+  eventId         String         @map("event_id")
+  eventType       String         @map("event_type")
+  paymentRecordId String?        @map("payment_record_id") @db.Uuid
+  payloadSha256   String         @map("payload_sha256")
+  outcome         String
+  receivedAt      DateTime       @default(now()) @map("received_at")
+  processedAt     DateTime?      @map("processed_at")
+
+  tenant        Tenant         @relation(fields: [tenantId], references: [id])
+  paymentRecord PaymentRecord? @relation(fields: [paymentRecordId], references: [id])
+
+  @@unique([tenantId, provider, eventId])
+  @@index([tenantId, provider, eventType, receivedAt])
+  @@index([tenantId, paymentRecordId])
+  @@map("payment_gateway_event")
   @@schema("public")
 }
 

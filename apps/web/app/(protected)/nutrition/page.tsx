@@ -35,16 +35,16 @@ export default async function NutritionPage({ searchParams }: { searchParams: { 
   return (
     <main className="dashboard-page nutrition-page">
       <NetworkNav tenantId={tenantId} />
-      <header className="dashboard-header">
+      <header className="training-hero nutrition-hero">
         <div>
           <p className="eyebrow">Nutrition journal</p>
-          <h1>Calories & macros</h1>
+          <h1>Nutrition</h1>
           <p className="muted">A focused daily log for meals, calories, macros, and nutrition history.</p>
         </div>
       </header>
       <div className="nutrition-workspace">
         {selected ? <ClientSwitcher tenantId={tenantId} selected={selected} initial={clientPage} /> : <aside className="surface nutrition-client-picker"><div className="client-empty-state"><strong>No clients visible.</strong><p>Nutrition tracking appears after this account is connected to a client.</p></div></aside>}
-        <section className="surface nutrition-main-panel">
+        <section className="nutrition-main-panel">
           {selected ? (
             <>
               <div className="section-heading nutrition-client-heading"><div><p className="eyebrow">Nutrition for</p><h2>{selected.name}</h2></div><Link className="secondary-button" href={`/clients/${selected.clientId}?${query}`}>Client profile</Link></div>

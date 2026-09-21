@@ -35,7 +35,11 @@ export type TrainingDashboard = {
   planHistory: readonly { id: string; version: number; createdAt: string }[];
   sessions: readonly { id: string; clientId: string; clientName: string; sessionDate: string; startTime: string; endTime: string | null; exerciseCount: number; exercises: readonly { name: string; sets?: string; reps?: string }[]; notes: string | null }[];
   dueEvaluations: readonly { id: string; clientId: string; clientName: string; nextDueDate: string; cadence: Cadence }[];
+  monthlyProgress: null | { current: MonthlyTrainingVolume; previous: MonthlyTrainingVolume; months: readonly MonthlyTrainingVolume[]; exercises: readonly ExerciseMonthlyProgress[] };
 };
+
+export type MonthlyTrainingVolume = { key: string; label: string; sessions: number; sets: number; reps: number };
+export type ExerciseMonthlyProgress = { name: string; current: { sets: number; reps: number }; previous: { sets: number; reps: number }; months: readonly { sets: number; reps: number }[] };
 
 export type PlanDayInput = {
   dayNumber: number;
@@ -98,13 +102,17 @@ export async function listTrainingDashboardForUser(client: PrismaClient, tenantI
     const clients = await tx.client.findMany({ where: clientWhere, include: { party: true, currentCoachAssignment: true }, orderBy: { party: { displayName: 'asc' } } });
     const visibleClientIds = clients.map((entry) => entry.id);
     const activeClientId = selectedClientId && visibleClientIds.includes(selectedClientId) ? selectedClientId : visibleClientIds[0];
-    const [user, exercises, currentPlan, planHistory, sessions, dueEvaluations] = await Promise.all([
+    const now = new Date();
+    const currentStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+    const historyStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 3, 1));
+    const [user, exercises, currentPlan, planHistory, sessions, dueEvaluations, progressSessions] = await Promise.all([
       tx.user.findUnique({ where: { id: userId }, select: { defaultRestSeconds: true } }),
       tx.exerciseCatalog.findMany({ where: { OR: [{ tenantId }, { tenantId: null }] }, orderBy: [{ muscleGroup: 'asc' }, { name: 'asc' }] }),
       activeClientId ? tx.workoutPlan.findFirst({ where: { clientId: activeClientId, isCurrent: true }, include: { days: { orderBy: { dayNumber: 'asc' } } } }) : null,
       activeClientId ? tx.workoutPlan.findMany({ where: { clientId: activeClientId }, select: { id: true, version: true, createdAt: true }, orderBy: { version: 'desc' } }) : [],
       tx.trainingSession.findMany({ where: { clientId: { in: visibleClientIds } }, include: { client: { include: { party: true } } }, orderBy: [{ sessionDate: 'desc' }, { createdAt: 'desc' }], take: 12 }),
       tx.evaluationDueEvent.findMany({ where: { clientId: { in: visibleClientIds }, status: { in: ['pending', 'reminded'] } }, include: { client: { include: { party: true } }, schedule: true }, orderBy: { nextDueDate: 'asc' }, take: 20 }),
+      activeClientId ? tx.trainingSession.findMany({ where: { clientId: activeClientId, sessionDate: { gte: historyStart } }, select: { sessionDate: true, exercisesPerformed: true } }) : [],
     ]);
     return {
       defaultRestSeconds: user?.defaultRestSeconds ?? 90,
@@ -114,8 +122,35 @@ export async function listTrainingDashboardForUser(client: PrismaClient, tenantI
       planHistory: planHistory.map((plan) => ({ id: plan.id, version: plan.version, createdAt: plan.createdAt.toISOString() })),
       sessions: sessions.map((row) => { const performed = normalizeExerciseList(row.exercisesPerformed); return { id: row.id, clientId: row.clientId, clientName: row.client.party.displayName, sessionDate: toPlainDate(row.sessionDate), startTime: row.startTime, endTime: row.endTime, exerciseCount: performed.length, exercises: performed, notes: row.notes }; }),
       dueEvaluations: dueEvaluations.map((row) => ({ id: row.id, clientId: row.clientId, clientName: row.client.party.displayName, nextDueDate: toPlainDate(row.nextDueDate), cadence: row.schedule.cadence })),
+      monthlyProgress: activeClientId ? monthlyTrainingProgress(progressSessions, historyStart, currentStart) : null,
     };
   });
+}
+
+function monthlyTrainingProgress(rows: readonly { sessionDate: Date; exercisesPerformed: Prisma.JsonValue }[], historyStart: Date, currentStart: Date): { current: MonthlyTrainingVolume; previous: MonthlyTrainingVolume; months: readonly MonthlyTrainingVolume[]; exercises: readonly ExerciseMonthlyProgress[] } {
+  const make = (start: Date) => ({ key: toPlainDate(start).slice(0, 7), label: new Intl.DateTimeFormat('en-IN', { month: 'short' }).format(start), sessions: 0, sets: 0, reps: 0 });
+  const months = Array.from({ length: 4 }, (_, index) => make(new Date(Date.UTC(historyStart.getUTCFullYear(), historyStart.getUTCMonth() + index, 1))));
+  const previous = months[2]!; const current = months[3]!;
+  const monthByKey = new Map(months.map((month) => [month.key, month]));
+  const exercises = new Map<string, ExerciseMonthlyProgress>();
+  for (const row of rows) {
+    const bucket = monthByKey.get(toPlainDate(row.sessionDate).slice(0, 7));
+    if (!bucket) continue;
+    const isCurrent = bucket.key === current.key;
+    bucket.sessions += 1;
+    for (const exercise of normalizeExerciseList(row.exercisesPerformed)) {
+      const sets = Number(exercise.sets) || 0;
+      const reps = [...(exercise.reps ?? '').matchAll(/×(\d+)/g)].reduce((sum, match) => sum + Number(match[1]), 0);
+      bucket.sets += sets; bucket.reps += reps;
+      const progress = exercises.get(exercise.name) ?? { name: exercise.name, current: { sets: 0, reps: 0 }, previous: { sets: 0, reps: 0 }, months: months.map(() => ({ sets: 0, reps: 0 })) };
+      const target = isCurrent ? progress.current : progress.previous;
+      target.sets += sets; target.reps += reps;
+      const monthIndex = months.findIndex((month) => month.key === bucket.key);
+      if (monthIndex >= 0) { progress.months[monthIndex]!.sets += sets; progress.months[monthIndex]!.reps += reps; }
+      exercises.set(exercise.name, progress);
+    }
+  }
+  return { current, previous, months, exercises: [...exercises.values()].sort((a, b) => (b.current.reps + b.previous.reps) - (a.current.reps + a.previous.reps) || a.name.localeCompare(b.name)) };
 }
 
 export async function saveTrainingRestDefaultForUser(client: PrismaClient, tenantId: string, userId: string, defaultRestSeconds: number) {
