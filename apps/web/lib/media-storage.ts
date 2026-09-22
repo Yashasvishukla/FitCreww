@@ -8,7 +8,7 @@ import { AzurePrivateBlobStorage, MediaPipelineError, type PrivateBlobStorage } 
  * not be read by the payslip route.
  */
 export class LocalPrivateBlobStorage implements PrivateBlobStorage {
-  constructor(private readonly root = resolve(process.env.LOCAL_MEDIA_STORAGE_PATH ?? '.fitcrew-media')) {}
+  constructor(private readonly root = resolve(process.env.LOCAL_MEDIA_STORAGE_PATH ?? defaultLocalStorageRoot())) {}
 
   async putPrivate(key: string, bytes: Uint8Array): Promise<void> {
     const path = this.pathFor(key);
@@ -39,17 +39,14 @@ export class LocalPrivateBlobStorage implements PrivateBlobStorage {
   }
 }
 
-class UnconfiguredPrivateBlobStorage implements PrivateBlobStorage {
-  private fail(): never { throw new MediaPipelineError('Private media storage is not configured.'); }
-  async putPrivate(): Promise<void> { this.fail(); }
-  async readPrivate(): Promise<Uint8Array> { return this.fail(); }
-  async createReadUrl(): Promise<string> { return this.fail(); }
-  async delete(): Promise<void> { this.fail(); }
+function defaultLocalStorageRoot() {
+  // Vercel functions can write only to /tmp. This fallback is intentionally
+  // ephemeral: configure Azure storage before relying on media across cold
+  // starts, deployments, or multiple function instances.
+  return process.env.NODE_ENV === 'production' ? '/tmp/fitcrew-media' : '.fitcrew-media';
 }
 
 const connectionString = process.env.AZURE_STORAGE_CONNECTION_STRING;
 export const mediaStorage: PrivateBlobStorage = connectionString && process.env.AZURE_STORAGE_CONTAINER
   ? new AzurePrivateBlobStorage(connectionString, process.env.AZURE_STORAGE_CONTAINER)
-  : process.env.NODE_ENV === 'production'
-    ? new UnconfiguredPrivateBlobStorage()
-    : new LocalPrivateBlobStorage();
+  : new LocalPrivateBlobStorage();
