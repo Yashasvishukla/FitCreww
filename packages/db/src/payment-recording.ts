@@ -159,13 +159,31 @@ export async function confirmRazorpayPaymentForUser(client: PrismaClient, tenant
   return withTenant(client as never, tenantId, async (tx: Tx) => {
     const actor = await requirePrincipal(tx, tenantId, userId);
     const payment = await tx.paymentRecord.findFirst({ where: { id: input.paymentId, gatewayProvider: 'razorpay', gatewayOrderId: input.razorpayOrderId }, include: { subscription: { include: { client: { include: { currentCoachAssignment: true } } } } } });
-    if (!payment || payment.status !== 'pending') throw new PaymentRecordingError('Razorpay payment is unavailable for confirmation.');
+    if (!payment) throw new PaymentRecordingError('Razorpay payment is unavailable for confirmation.');
     const assignment = payment.subscription?.client.currentCoachAssignment;
     const allowed = payment.purpose === 'org_agreement'
       ? effectiveAssignments(actor).some((assignment) => assignment.role === 'OwnerAdmin' && assignment.scopeType === 'tenant')
       : assignment && await accessGateForPrincipal(tx, actor).can(actor, 'create', { type: 'payment', tenantId, coachPartyId: assignment.coachPartyId, organizationId: payment.subscription?.client.organizationId ?? undefined });
     if (!allowed) throw new PaymentRecordingError('Forbidden.');
     verifyRazorpaySignature(input);
+    // Checkout and Razorpay's webhook race each other. A matching, signed
+    // browser callback after the webhook has already confirmed this payment is
+    // a successful duplicate—not a failed checkout. Never accept a different
+    // gateway payment id for the same order.
+    if (payment.status === 'confirmed') {
+      if (payment.gatewayPaymentId !== input.razorpayPaymentId || !payment.confirmedAt) {
+        throw new PaymentRecordingError('Razorpay payment is unavailable for confirmation.');
+      }
+      return {
+        id: payment.id,
+        status: 'confirmed' as const,
+        confirmedAt: payment.confirmedAt.toISOString(),
+        commissionAmount: null,
+        coachPayableAmount: null,
+        duplicate: true as const,
+      };
+    }
+    if (payment.status !== 'pending') throw new PaymentRecordingError('Razorpay payment is unavailable for confirmation.');
     await verifyCapturedRazorpayPayment(input.razorpayPaymentId, {
       orderId: input.razorpayOrderId,
       amountMinor: decimalToMinor(payment.amount.toString()),
@@ -244,6 +262,14 @@ export async function confirmPaymentForUser(client: PrismaClient, tenantId: stri
     // Checkout callback or signed gateway webhook.
     if (payment.method === 'razorpay' || payment.gatewayProvider === 'razorpay') {
       throw new PaymentRecordingError('Razorpay payments must be confirmed by verified gateway evidence.');
+    }
+    // Coach payouts are a settlement, not a collection.  They must be
+    // confirmed through the settlement workflow so the payable is cleared,
+    // the correct ledger entry is posted, and a payslip is issued together.
+    // Treating one as a generic Money confirmation leaves a confirmed payout
+    // attached to a draft settlement, which cannot be reconciled safely.
+    if (payment.purpose === 'coach_payout') {
+      throw new PaymentRecordingError('Coach payouts must be confirmed from Earnings.');
     }
     const confirmation = await new ManualConfirmationSource(input).awaitConfirmation(payment.id);
     if (confirmation.proofMediaAssetId) {

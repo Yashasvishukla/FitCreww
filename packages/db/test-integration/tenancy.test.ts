@@ -182,6 +182,7 @@ describe('tenancy core RLS', () => {
     const settlementPeriodStart = pending.billingPeriodStart; const settlementPeriodEnd = pending.billingPeriodEnd; const storage = new MemoryPrivateBlobStorage();
     const batch = await createSettlementForUser(appPrisma, tenantId, userId, { coachPartyId: coachId, periodStart: settlementPeriodStart, periodEnd: settlementPeriodEnd, method: 'upi' });
     expect(batch).toMatchObject({ accrualCount: 2, totalAmount: '3600.00', status: 'draft' });
+    await expect(confirmPaymentForUser(appPrisma, tenantId, userId, { paymentId: batch.payoutPaymentId, utr: 'PAYOUT123456' })).rejects.toThrow('Coach payouts must be confirmed from Earnings.');
     const paid = await confirmSettlementForUser(appPrisma, tenantId, userId, { settlementId: batch.id, utr: 'PAYOUT123456' }, storage);
     expect(paid.status).toBe('paid');
     const document = await downloadPayslipForUser(appPrisma, tenantId, userId, paid.payslipMediaAssetId, storage);

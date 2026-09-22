@@ -106,8 +106,9 @@ export function MoneyWorkspace({ tenantId, initial, checkoutMode }: { tenantId: 
   const availableSubscriptions = scheduledSubscriptions.filter((subscription) => subscription.paymentStatus === 'unpaid' && !collectedSubscriptionIds.has(subscription.id));
   const collectableSubscriptions = availableSubscriptions.filter((subscription) => subscription.canCollect);
   const isInReportingPeriod = (value: string | null) => value !== null && value >= initial.reportingPeriod.start && value < initial.reportingPeriod.end;
-  const confirmedTotal = initial.payments.filter((payment) => payment.status === 'confirmed' && isInReportingPeriod(payment.confirmedAt)).reduce((total, payment) => total + amountOf(payment.amount), 0);
-  const pending = initial.payments.filter((payment) => payment.status === 'pending');
+  const collectionPayments = initial.payments.filter((payment) => payment.purpose !== 'coach_payout');
+  const confirmedTotal = collectionPayments.filter((payment) => payment.status === 'confirmed' && isInReportingPeriod(payment.confirmedAt)).reduce((total, payment) => total + amountOf(payment.amount), 0);
+  const pending = collectionPayments.filter((payment) => payment.status === 'pending');
   const gatewayPending = pending.filter((payment) => payment.gatewayProvider === 'razorpay');
   const checkoutDetail = gatewayPending.length
     ? `${gatewayPending.length} pending gateway payment${gatewayPending.length === 1 ? '' : 's'}`
@@ -419,7 +420,7 @@ export function MoneyWorkspace({ tenantId, initial, checkoutMode }: { tenantId: 
       </section>
 
       <div className="finance-command-grid">
-        <section className="finance-command">
+        <section className={`finance-command${selectedSubscription ? '' : ' finance-command-empty'}`}>
           <div>
             <p className="eyebrow">Subscription schedule</p>
             <h2>Review this month’s installment.</h2>
@@ -480,7 +481,7 @@ export function MoneyWorkspace({ tenantId, initial, checkoutMode }: { tenantId: 
                 </div>
               </div>
               <strong className="finance-amount">{inr.format(amountOf(payment.amount))}</strong>
-              {payment.status === 'pending' && payment.method !== 'razorpay' && payment.gatewayProvider !== 'razorpay' ? (
+              {payment.status === 'pending' && payment.purpose !== 'coach_payout' && payment.method !== 'razorpay' && payment.gatewayProvider !== 'razorpay' ? (
                 <form className="finance-inline-form" onSubmit={(event) => confirm(event, payment.id)} noValidate>
                   <label className="finance-compact-field">
                     <span className="sr-only">UTR</span>
@@ -504,7 +505,7 @@ export function MoneyWorkspace({ tenantId, initial, checkoutMode }: { tenantId: 
                     {stateOf(`confirm-${payment.id}`) === 'submitting' ? 'Confirming' : 'Confirm'}
                   </button>
                 </form>
-              ) : payment.status === 'pending' ? <span className="finance-proof">Online payment pending verification</span> : <span className="finance-proof">{payment.gatewayProvider ? 'Online payment' : 'UTR'} {payment.utr ?? 'Proof attached'}</span>}
+              ) : payment.status === 'pending' ? <span className="finance-proof">{payment.purpose === 'coach_payout' ? 'Confirm in Earnings' : 'Online payment pending verification'}</span> : <span className="finance-proof">{payment.gatewayProvider ? 'Online payment' : 'UTR'} {payment.utr ?? 'Proof attached'}</span>}
               {initial.ownerAccess && payment.purpose === 'client_subscription' && payment.status === 'confirmed' ? (
                 <details className="finance-disclosure finance-refund">
                   <summary>Post a refund</summary>
